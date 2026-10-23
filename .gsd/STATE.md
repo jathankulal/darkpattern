@@ -11,12 +11,12 @@
 | Field | Value |
 |---|---|
 | Date initialized | 2026-10-23 |
-| Active phase | Phase 6 — Demo Readiness & Release Audit (Completed & Verified) |
-| Implementation started | **Yes** (Phases 0–6 completed) |
-| Any code committed | **Yes** (Checkpoint pending push) |
+| Active phase | Phase 7 — Financial Commitment Timeline & Annualized Projections (Completed & Verified) |
+| Implementation started | **Yes** (Phases 0–7 completed) |
+| Any code committed | **Yes** (Phase 0–6 committed in d64f6dc; Phase 7 implemented and tested) |
 | Any dependencies installed | **Yes** (Python 3.12 venv in `backend/.venv`, npm modules in `extension/node_modules`) |
 
-**Summary:** Phase 6 (Demo Readiness and Release Audit) is complete. 140 backend tests pass (100%), 17 extension vitest tests pass, TypeScript compiles with 0 errors, and WXT production build succeeds. 4 local reproducible demo fixtures created and verified.
+**Summary:** Phase 7 (Financial Commitment Timeline & Annualized Projections) is complete. 152 backend tests pass (100%), 21 extension Vitest tests pass, TypeScript compiles with 0 errors, and WXT production build succeeds in <1.5s. All timeline events, critical cutoff actions, and annualized projection formulas are deterministically computed and grounded in page text.
 
 ---
 
@@ -85,12 +85,20 @@ Canonical record is in `docs/11`. Do not change decisions here without also upda
 - No code written. No dependencies installed. No commits made beyond these three files.
 - Next action: resolve O-006 (permissions) and dev-environment question, then execute Phase 1.
 
+### 2026-10-23 — Phase 7: Financial Commitment Timeline & Annualized Projections
+- Implemented `TimelineValueType`, `TimelineEvent`, `FinancialTimeline` in Pydantic schemas and TypeScript types.
+- Implemented `calculate_annualized_cost` using Python `Decimal` (zero floating-point currency math) with transparent multiplier assumptions.
+- Implemented `build_plan_timeline` and `build_financial_timeline` in `app/analyzer.py` mapping trial, renewal, cancellation deadline, ongoing subscription, and annualized projections.
+- Fixed negated recurring mention bug in `app/extraction.py` (e.g., "no recurring fees" correctly treated as one-time).
+- Added comprehensive pytest suite in `backend/tests/test_financial_timeline.py` (12 tests, 152 total across backend).
+- Built high-clarity React component `FinancialTimeline.tsx` with vertical connecting rail, critical action badges (`⚠️ Action Required`), calculation callouts, and quote toggles.
+- Integrated `FinancialTimeline` into `App.tsx` and `PlanList.tsx`.
+- Added Vitest suite in `extension/src/tests/financialTimeline.test.tsx` (4 tests, 21 total across extension).
+- Validated WXT production build and TypeScript compilation with 0 errors.
+
 ---
 
 ## Next Actions
 
-1. **Confirm dev environment** (Node version, Python version, venv approach) before Phase 1.
-2. **Confirm O-006** (required extension permissions) — can be refined post-scaffold but
-   a starting position is helpful.
-3. **Run `/execute` Phase 1** once environment is confirmed.
-4. After Phase 1 exit criterion is met: run `/audit-milestone`, then `/complete-milestone`.
+1. Demo rehearsal on all 4 judge fixtures verifying visual presentation of timelines.
+2. Review optional user-facing enhancements or commit Phase 7 changes to main.

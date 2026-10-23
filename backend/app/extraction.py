@@ -211,7 +211,9 @@ def extract_prices_from_text(text: str) -> List[ExtractedPrice]:
 
         # Determine price kind from context
         kind = MoneyKind.ONE_TIME
-        if interval or re.search(r"renews?|recurring|subscription|billed\s+(?:monthly|annually|each)", window, re.IGNORECASE):
+        has_recurring_kw = bool(re.search(r"renews?|recurring|subscription|billed\s+(?:monthly|annually|each)", window, re.IGNORECASE))
+        is_negated_recurring = bool(re.search(r"\b(?:no|not|without|non)[\s-]+(?:recurring|renewals?|subscriptions?)\b", window, re.IGNORECASE))
+        if interval or (has_recurring_kw and not is_negated_recurring):
             kind = MoneyKind.RECURRING
 
         # Check if trial price (e.g. ₹0 or free)

@@ -1,5 +1,6 @@
 import React from 'react';
 import type { PlanSummary, MoneyValue } from '../types/api';
+import { FinancialTimeline } from './FinancialTimeline';
 
 interface PlanListProps {
   plans: PlanSummary[];
@@ -112,6 +113,17 @@ export function PlanList({ plans }: PlanListProps) {
                     <li key={i}>{u}</li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {/* Tier-Specific Timeline */}
+            {plan.timeline && (
+              <div className="mt-2 pt-2 border-t border-slate-200/60">
+                <FinancialTimeline
+                  timeline={plan.timeline}
+                  title={`${plan.plan_name} Timeline`}
+                  isCompact={true}
+                />
               </div>
             )}
           </div>

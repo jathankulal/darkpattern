@@ -87,6 +87,25 @@ export interface CommitmentMap {
   unknowns: string[];
 }
 
+export type TimelineValueType = 'observed' | 'calculated' | 'unresolved';
+
+export interface TimelineEvent {
+  timepoint: string;
+  title: string;
+  amount?: MoneyValue | null;
+  value_type: TimelineValueType;
+  description: string;
+  evidence_text: string;
+  is_critical_action?: boolean;
+}
+
+export interface FinancialTimeline {
+  events: TimelineEvent[];
+  annualized_cost?: MoneyValue | null;
+  annualized_cost_assumptions?: string | null;
+  note?: string | null;
+}
+
 export interface PlanSummary {
   plan_name: string;
   amount_due_now?: MoneyValue | null;
@@ -99,6 +118,7 @@ export interface PlanSummary {
   is_ambiguous: boolean;
   ambiguity_reason?: string | null;
   evidence_text: string;
+  timeline?: FinancialTimeline | null;
 }
 
 export interface FeeItem {
@@ -146,6 +166,7 @@ export interface AnalyzeResponse {
   price_integrity: PriceIntegrity;
   checklist: string[];
   limitations: string[];
+  timeline?: FinancialTimeline | null;
 }
 
 export interface HealthResponse {

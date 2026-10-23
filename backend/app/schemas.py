@@ -200,6 +200,70 @@ class FeeItem(BaseModel):
     context: Optional[str] = Field(default=None, max_length=_MAX_ITEM_TEXT, description="Contextual explanation or rate")
 
 
+class TimelineValueType(str, Enum):
+    """Classification of how a timeline value was derived."""
+
+    OBSERVED = "observed"
+    CALCULATED = "calculated"
+    UNRESOLVED = "unresolved"
+
+
+class TimelineEvent(BaseModel):
+    """A single milestone event in the financial commitment timeline."""
+
+    timepoint: str = Field(
+        max_length=100,
+        description="Relative or explicit milestone timing, e.g. 'Today (Due Now)', 'Day 13 (24h cutoff)', 'Day 14 (Trial Ends)', 'Monthly thereafter'",
+    )
+    title: str = Field(
+        max_length=150,
+        description="Human-readable milestone title, e.g. 'Initial Payment', 'Cancellation Deadline', 'First Recurring Charge'",
+    )
+    amount: Optional[MoneyValue] = Field(
+        default=None,
+        description="Monetary charge associated with this milestone, if any",
+    )
+    value_type: TimelineValueType = Field(
+        description="Whether the value is directly observed, calculated, or unresolved",
+    )
+    description: str = Field(
+        max_length=_MAX_FINDING_TEXT,
+        description="Plain-language explanation of financial terms at this milestone",
+    )
+    evidence_text: str = Field(
+        default="",
+        max_length=_MAX_EVIDENCE_TEXT,
+        description="Verbatim snippet from page text supporting this event",
+    )
+    is_critical_action: bool = Field(
+        default=False,
+        description="True if user action is required to avoid charges or meet deadline",
+    )
+
+
+class FinancialTimeline(BaseModel):
+    """Chronological timeline of consumer financial commitments, renewals, and deadlines."""
+
+    events: List[TimelineEvent] = Field(
+        default_factory=list,
+        description="Chronologically ordered milestone events",
+    )
+    annualized_cost: Optional[MoneyValue] = Field(
+        default=None,
+        description="Calculated annual recurring commitment where safely calculable",
+    )
+    annualized_cost_assumptions: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Assumptions and formula behind the annualized cost calculation",
+    )
+    note: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Contextual note if timeline is unresolved, multi-plan, or partial",
+    )
+
+
 class PlanSummary(BaseModel):
     """Financial terms specific to an individual pricing plan or product option."""
 
@@ -231,6 +295,9 @@ class PlanSummary(BaseModel):
     )
     evidence_text: str = Field(
         default="", max_length=_MAX_EVIDENCE_TEXT, description="Verbatim page text for this plan"
+    )
+    timeline: Optional[FinancialTimeline] = Field(
+        default=None, description="Tier-specific financial commitment timeline"
     )
 
 
@@ -352,6 +419,10 @@ class AnalyzeResponse(BaseModel):
         default_factory=list,
         max_length=_MAX_LIST_ITEMS,
         description="Disclosures regarding analysis boundaries (max 20 items)",
+    )
+    timeline: Optional[FinancialTimeline] = Field(
+        default=None,
+        description="Chronological timeline of financial commitments, renewals, and deadlines",
     )
 
 

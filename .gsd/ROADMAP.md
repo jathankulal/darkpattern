@@ -118,16 +118,33 @@ Tasks (from `docs/09`):
 ---
 
 ### Phase 6: Polish and Demo
-**Status:** ⬜ Not Started
+**Status:** ✅ COMPLETE
 
 Tasks (from `docs/09`):
-- [ ] Improve loading/error/partial states and accessibility.
-- [ ] Run pytest, Vitest, and end-to-end tests on a clean clone.
-- [ ] Prepare 2–3 minute demo using fixed fixtures.
-- [ ] Document known limitations and measured results.
+- [x] Improve loading/error/partial states and accessibility.
+- [x] Run pytest, Vitest, and end-to-end tests on a clean clone.
+- [x] Prepare 2–3 minute demo using fixed fixtures.
+- [x] Document known limitations and measured results.
 
 **Exit criterion:**
 > All acceptance criteria in `docs/08_TEST_AND_ACCEPTANCE_PLAN.md` are met and evidenced.
+
+---
+
+### Phase 7: Financial Commitment Timeline & Annualized Projections
+**Status:** ✅ COMPLETE
+
+Tasks:
+- [x] Define typed timeline contracts (`TimelineEvent`, `TimelineValueType`, `FinancialTimeline`).
+- [x] Implement deterministic annualized commitment calculations using Decimal arithmetic.
+- [x] Construct chronological timeline tracking payments, trial expiration, cutoff deadlines, renewal charges, and 12-month projections.
+- [x] Ground all milestones in verbatim extracted evidence snippets.
+- [x] Build React `FinancialTimeline` component with vertical timeline rail, critical action badges, and calculation callouts.
+- [x] Integrate timeline into popup view and multi-plan breakdowns.
+- [x] Validate with 12 backend pytest tests (152 total) and 4 Vitest tests (21 total).
+
+**Exit criterion:**
+> Consumers are presented with a clear chronological sequence of financial milestones and annualized commitments before paying.
 
 ---
 

@@ -16,6 +16,7 @@ import { PlanList } from '../../src/components/PlanList';
 import { FindingCard } from '../../src/components/FindingCard';
 import { PriceIntegrityTrail } from '../../src/components/PriceIntegrityTrail';
 import { Checklist } from '../../src/components/Checklist';
+import { FinancialTimeline } from '../../src/components/FinancialTimeline';
 import { ErrorState } from '../../src/components/ErrorState';
 
 type UIState =
@@ -231,6 +232,9 @@ export default function App() {
               commitmentMap={state.data.commitment_map}
               isMultiPlan={Boolean(state.data.plans && state.data.plans.length > 1)}
             />
+
+            {/* Financial Commitment Timeline */}
+            <FinancialTimeline timeline={state.data.timeline} />
 
             {/* Pricing Plans Breakdown (when multiple plans or individual tiers detected) */}
             {state.data.plans && state.data.plans.length > 0 && (
