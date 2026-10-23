@@ -103,8 +103,13 @@ describe('FinancialTimeline Component', () => {
     // Verified quote toggling
     const viewQuoteBtns = screen.getAllByText(/View verified quote/i);
     expect(viewQuoteBtns.length).toBeGreaterThan(0);
+    const firstBtn = viewQuoteBtns[0];
+    expect(firstBtn).toBeDefined();
+    if (!firstBtn) {
+      throw new Error('Expected view quote button to be rendered');
+    }
 
-    fireEvent.click(viewQuoteBtns[0]);
+    fireEvent.click(firstBtn);
     expect(screen.getByText(/"14-day free trial"/i)).toBeDefined();
   });
 
