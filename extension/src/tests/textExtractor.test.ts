@@ -73,4 +73,19 @@ describe('textExtractor', () => {
     expect(companyPos).toBeGreaterThanOrEqual(0);
     expect(subscriptionPos).toBeLessThan(companyPos);
   });
+
+  it('prioritizes urgency and scarcity phrases over unrelated background copy', () => {
+    document.body.innerHTML = `
+      <p>Browse our catalog of everyday supplies and accessories.</p>
+      <p>Limited time offer! Sale ends in 15 minutes, only 2 left in stock!</p>
+    `;
+
+    const result = extractRelevantText(document);
+    const urgencyPos = result.pageText.indexOf('Limited time offer');
+    const catalogPos = result.pageText.indexOf('Browse our catalog');
+
+    expect(urgencyPos).toBeGreaterThanOrEqual(0);
+    expect(catalogPos).toBeGreaterThanOrEqual(0);
+    expect(urgencyPos).toBeLessThan(catalogPos);
+  });
 });

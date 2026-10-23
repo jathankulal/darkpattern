@@ -18,6 +18,12 @@ import { PriceIntegrityTrail } from '../../src/components/PriceIntegrityTrail';
 import { Checklist } from '../../src/components/Checklist';
 import { FinancialTimeline } from '../../src/components/FinancialTimeline';
 import { ErrorState } from '../../src/components/ErrorState';
+import { LanguageSelector } from '../../src/components/LanguageSelector';
+import {
+  getInitialLanguage,
+  saveSelectedLanguage,
+  type SupportedLanguage,
+} from '../../src/lib/language';
 
 type UIState =
   | { type: 'idle' }
@@ -29,6 +35,12 @@ type UIState =
 export default function App() {
   const [state, setState] = useState<UIState>({ type: 'idle' });
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [language, setLanguage] = useState<SupportedLanguage>(getInitialLanguage);
+
+  const handleLanguageChange = (newLang: SupportedLanguage) => {
+    setLanguage(newLang);
+    saveSelectedLanguage(newLang);
+  };
 
   // Check backend health on initial popup mount
   useEffect(() => {
@@ -122,7 +134,7 @@ export default function App() {
         page_title: extraction.pageTitle,
         page_url: extraction.pageUrl,
         page_text: extraction.pageText,
-        locale: extraction.locale,
+        locale: language,
       });
 
       setState({ type: 'results', data: result });
@@ -151,14 +163,21 @@ export default function App() {
           </div>
         </div>
 
-        {health && (
-          <span
-            className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full border border-slate-200"
-            title={`Backend connected (${health.version})`}
-          >
-            Backend Ready
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          <LanguageSelector
+            selectedLanguage={language}
+            onLanguageChange={handleLanguageChange}
+            disabled={state.type === 'extracting' || state.type === 'analyzing'}
+          />
+          {health && (
+            <span
+              className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full border border-slate-200"
+              title={`Backend connected (${health.version})`}
+            >
+              Ready
+            </span>
+          )}
+        </div>
       </header>
 
       {/* Main Content Area */}

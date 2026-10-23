@@ -1,3 +1,4 @@
+
 # 12. Demo Scenarios and Expected Behavior
 
 Use synthetic pages or controlled fixtures so the demo is reproducible. These examples are test scenarios, not claims about any real merchant.

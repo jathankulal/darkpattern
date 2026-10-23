@@ -32,6 +32,7 @@ from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     AnalyzeStatus,
+    EvidenceLevel,
     FindingCategory,
     FindingSeverity,
 )
@@ -331,10 +332,10 @@ class TestUnsupportedEvidence:
         findings, rejected = _validate_and_build_findings(parsed, _SAMPLE_PAGE_TEXT)
         assert len(findings) == 0
 
-    def test_empty_evidence_rejected(self):
+    def test_empty_evidence_rejected_for_affirmative_categories(self):
         parsed = {
             "findings": [{
-                "category": "missing_commitment_info",
+                "category": "recurring_payment",
                 "severity": "low",
                 "evidence_text": "",
                 "explanation": "X",
@@ -343,6 +344,26 @@ class TestUnsupportedEvidence:
         }
         findings, rejected = _validate_and_build_findings(parsed, _SAMPLE_PAGE_TEXT)
         assert len(findings) == 0
+        assert len(rejected) == 1
+        assert "empty evidence_text" in rejected[0]
+
+    def test_empty_evidence_allowed_for_missing_commitment_info(self):
+        parsed = {
+            "findings": [{
+                "category": "missing_commitment_info",
+                "severity": "low",
+                "evidence_text": "",
+                "explanation": "Cancellation policy is absent from checkout page",
+                "missing_information": ["Cancellation policy"],
+                "recommendation": "Check terms before paying",
+            }],
+        }
+        findings, rejected = _validate_and_build_findings(parsed, _SAMPLE_PAGE_TEXT)
+        assert len(findings) == 1
+        assert findings[0].category == FindingCategory.MISSING_COMMITMENT_INFO
+        assert findings[0].evidence_level == EvidenceLevel.UNKNOWN
+        assert findings[0].evidence_text == ""
+        assert len(rejected) == 0
 
     def test_mixed_valid_invalid_evidence(self):
         """Valid evidence accepted, invalid evidence rejected in same batch."""

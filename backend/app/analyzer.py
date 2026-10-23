@@ -14,7 +14,10 @@ from app.schemas import (
     AnalyzeResponse,
     AnalyzeStatus,
     CommitmentMap,
+    EvidenceLevel,
     FinancialTimeline,
+    Finding,
+    FindingCategory,
     MoneyKind,
     MoneyValue,
     PlanSummary,
@@ -724,6 +727,7 @@ def analyze_page_content(
             "trial_duration": det_result.trial_duration,
             "is_recurring": det_result.is_recurring,
         },
+        locale=request.locale,
     )
 
     # 3. Combine findings (deterministic takes priority; AI findings appended if grounded)
@@ -732,6 +736,18 @@ def analyze_page_content(
         # Avoid duplicate findings for same category
         if not any(f.category == ai_f.category for f in findings):
             findings.append(ai_f)
+
+    # Post-validation: ensure explicit findings have evidence grounded in page text
+    validated_findings: List[Finding] = []
+    for f in findings:
+        if f.evidence_level == EvidenceLevel.EXPLICIT:
+            if not f.evidence_text or f.evidence_text not in request.page_text:
+                if f.category == FindingCategory.MISSING_COMMITMENT_INFO:
+                    f = f.model_copy(update={"evidence_level": EvidenceLevel.UNKNOWN, "evidence_text": ""})
+                else:
+                    continue
+        validated_findings.append(f)
+    findings = validated_findings
 
     # 4. Construct CommitmentMap
     commitment_map = CommitmentMap(

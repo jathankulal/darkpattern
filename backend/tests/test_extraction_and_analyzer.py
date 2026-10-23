@@ -30,6 +30,7 @@ from app.ai.base import (
 from app.analyzer import analyze_page_content
 from app.config import Settings
 from app.extraction import (
+    detect_urgency_pressure,
     extract_prices_from_text,
     extract_trial_terms,
     extract_cancellation_terms,
@@ -41,6 +42,7 @@ from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     AnalyzeStatus,
+    EvidenceLevel,
     FindingCategory,
     FindingSeverity,
     MoneyKind,
@@ -830,5 +832,130 @@ def test_phase3_1_multiple_quantity_without_subtotal():
     assert res.price_integrity.checkout_subtotal is not None
     assert res.price_integrity.checkout_subtotal.amount == "50.00"
     assert res.price_integrity.unexplained_difference is None
+
+
+def test_urgency_pressure_detection_positive():
+    """Verify countdowns, expiry, and explicit scarcity trigger URGENCY_PRESSURE findings."""
+    page_text = (
+        "Special membership: $19.99 per month.\n"
+        "Hurry! Sale ends in 15 minutes, only 3 items left in stock!\n"
+        "Cancel anytime in settings."
+    )
+    req = AnalyzeRequest(
+        page_title="Urgent Offer Store",
+        page_url="https://urgent.example/checkout",
+        page_text=page_text,
+    )
+    res = analyze_page_content(req, default_settings)
+
+    urgency_findings = [f for f in res.findings if f.category == FindingCategory.URGENCY_PRESSURE]
+    assert len(urgency_findings) >= 1
+    for f in urgency_findings:
+        assert f.evidence_level == EvidenceLevel.EXPLICIT
+        assert f.evidence_text in page_text
+        assert len(f.evidence_text) > 0
+        assert f.severity == FindingSeverity.LOW
+
+
+def test_urgency_pressure_false_positive_exclusions():
+    """Verify credit card expiry, ordinary opening hours, and shipping windows are NOT flagged as urgency."""
+    page_text = (
+        "Order Summary:\n"
+        "Item: Leather Jacket - $120.00\n"
+        "Shipping: Order within 2 hours for delivery by Friday.\n"
+        "Store hours: Open Monday - Friday 9am - 5pm.\n"
+        "Payment details: Card Exp: 12/28.\n"
+        "Total: $120.00 one-time payment."
+    )
+    matches = detect_urgency_pressure(page_text)
+    assert matches == [], f"Expected 0 urgency matches on benign text, got: {matches}"
+
+    req = AnalyzeRequest(
+        page_title="Regular Store",
+        page_url="https://store.example/checkout",
+        page_text=page_text,
+    )
+    res = analyze_page_content(req, default_settings)
+    assert not any(f.category == FindingCategory.URGENCY_PRESSURE for f in res.findings)
+
+
+def test_missing_commitment_cancellation_terms_detection():
+    """Verify recurring subscriptions with demonstrably absent cancellation terms emit MISSING_COMMITMENT_INFO."""
+    page_text = (
+        "Cloud Pro Service\n"
+        "Subscription renews automatically at $29.99 per month.\n"
+        "Your card will be charged every month."
+    )
+    req = AnalyzeRequest(
+        page_title="Cloud Pro",
+        page_url="https://cloud.example/subscribe",
+        page_text=page_text,
+    )
+    res = analyze_page_content(req, default_settings)
+
+    missing_findings = [f for f in res.findings if f.category == FindingCategory.MISSING_COMMITMENT_INFO]
+    assert len(missing_findings) == 1
+    f = missing_findings[0]
+    assert f.id == "finding-missing-cancellation-terms"
+    assert f.evidence_level == EvidenceLevel.UNKNOWN
+    assert f.evidence_text == ""
+    assert "Cancellation" in f.missing_information[0]
+    assert f.severity == FindingSeverity.LOW
+    assert any("Cancellation deadline and instructions are not stated" in u for u in res.commitment_map.unknowns)
+
+
+def test_missing_commitment_info_not_flagged_for_one_time_or_disclosed_cancellation():
+    """Verify one-time checkouts and subscriptions with disclosed cancellation do NOT emit MISSING_COMMITMENT_INFO."""
+    # Scenario A: One-time purchase
+    req_one_time = AnalyzeRequest(
+        page_title="One Time Purchase",
+        page_url="https://shop.example/buy",
+        page_text="Order total is $45.00 one-time payment.",
+    )
+    res_one_time = analyze_page_content(req_one_time, default_settings)
+    assert not any(f.category == FindingCategory.MISSING_COMMITMENT_INFO for f in res_one_time.findings)
+
+    # Scenario B: Subscription with disclosed cancellation
+    req_sub = AnalyzeRequest(
+        page_title="Sub With Cancellation",
+        page_url="https://sub.example/signup",
+        page_text="Renews at $10.00/month automatically. Cancel anytime online.",
+    )
+    res_sub = analyze_page_content(req_sub, default_settings)
+    assert not any(f.category == FindingCategory.MISSING_COMMITMENT_INFO for f in res_sub.findings)
+
+
+def test_analyzer_post_validation_evidence_grounding():
+    """Verify explicit findings with fabricated or missing evidence are rejected or downgraded."""
+    from app.schemas import Finding
+    page_text = "Simple subscription for $15/month. Cancel anytime."
+
+    # Mock an AI interpreter that attempts to return an explicit finding with fabricated evidence
+    mock_ai = MagicMock(spec=AIInterpreter)
+    fabricated_finding = Finding(
+        id="fake-urgency",
+        category=FindingCategory.URGENCY_PRESSURE,
+        severity=FindingSeverity.HIGH,
+        evidence_level=EvidenceLevel.EXPLICIT,
+        evidence_text="FABRICATED TEXT THAT DOES NOT EXIST ON PAGE",
+        explanation="Deceptive countdown",
+        confidence=0.9,
+        missing_information=[],
+        recommendation="Beware",
+    )
+    mock_ai.interpret.return_value = AIInterpretationResult(
+        additional_findings=[fabricated_finding],
+        ai_status="active",
+    )
+
+    req = AnalyzeRequest(
+        page_title="Test Grounding",
+        page_url="https://grounding.example",
+        page_text=page_text,
+    )
+    res = analyze_page_content(req, default_settings, ai_interpreter=mock_ai)
+
+    # The fabricated finding must be stripped by post-validation
+    assert not any(f.id == "fake-urgency" for f in res.findings)
 
 

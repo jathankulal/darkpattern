@@ -419,6 +419,112 @@ def detect_recurring_signals(text: str) -> Tuple[bool, Optional[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Urgency Pressure & Scarcity Detection
+# ---------------------------------------------------------------------------
+
+_CARD_EXPIRY_RE = re.compile(
+    r"(?i)\b(?:card\s+|credit\s+|debit\s+)?(?:exp(?:ir(?:es|y|ation))?|valid\s+thru)\s*[:.]?\s*\d{1,2}\s*[/ -]\s*(?:\d{2}|\d{4})\b"
+)
+_SHIPPING_WINDOW_RE = re.compile(
+    r"(?i)\b(?:order\s+(?:within|in)\s+.*?(?:for\s+delivery|for\s+dispatch|to\s+receive|to\s+get\s+it)|delivers?\s+(?:within|by|in)|dispatche?s?\s+(?:within|in)|shipping\s+(?:window|estimate|within))\b"
+)
+_BUSINESS_HOURS_RE = re.compile(
+    r"(?i)\b(?:open(?:ing)?\s+hours|business\s+hours|store\s+hours|support\s+hours|hours\s*:\s*\w+)\b"
+)
+
+_URGENCY_COUNTDOWN_RE = re.compile(
+    r"(?i)\b(?P<snippet>(?:offer|sale|deal|discount|promo|special\s+pricing)\s+(?:expires|ends)\s+(?:in\s+\d+\s+(?:hours?|minutes?|mins?|seconds?|secs?|days?)|today|tonight|soon)|\bexpires\s+in\s+\d+\s+(?:hours?|minutes?|mins?|seconds?|secs?|days?)\b)",
+)
+_URGENCY_SCARCITY_RE = re.compile(
+    r"(?i)\b(?P<snippet>only\s+\d+\s+(?:left|remaining|in\s+stock|available|seats\s+left|tickets\s+left|spots\s+left)|almost\s+sold\s+out)\b",
+)
+_URGENCY_PRESSURE_RE = re.compile(
+    r"(?i)\b(?P<snippet>(?:hurry[!,.]?\s+(?:offer|sale|deal)?\s*(?:expires|ends)?|act\s+now\s+before\s+(?:price\s+increases|it'?s\s+gone|sold\s+out)|last\s+chance\s+to\s+(?:save|claim|buy)))\b",
+)
+_URGENCY_LIMITED_RE = re.compile(
+    r"(?i)\b(?P<snippet>limited\s+time\s+(?:offer|deal)\s*[-:]\s*(?:expires|ends|act\s+fast|today\s+only))\b",
+)
+
+
+def detect_urgency_pressure(text: str) -> List[str]:
+    """Detect high-signal urgency, countdown, and artificial scarcity patterns.
+
+    Strictly excludes:
+    - Credit/debit card expiration dates (e.g. 'Expires 08/29')
+    - Standard business or customer service opening hours
+    - Shipping delivery cutoffs (e.g. 'Order within 3 hrs for delivery tomorrow')
+    - Generic non-urgent promotional labels (e.g. 'Special Offer', 'Save 20%')
+
+    Returns a list of unique exact verbatim snippets from `text`.
+    """
+    if not text:
+        return []
+
+    ignore_spans: List[Tuple[int, int]] = []
+    for pattern in (_CARD_EXPIRY_RE, _SHIPPING_WINDOW_RE, _BUSINESS_HOURS_RE):
+        for m in pattern.finditer(text):
+            ignore_spans.append((m.start(), m.end()))
+
+    matches: List[str] = []
+    seen: Set[str] = set()
+
+    for pattern in (_URGENCY_COUNTDOWN_RE, _URGENCY_SCARCITY_RE, _URGENCY_PRESSURE_RE, _URGENCY_LIMITED_RE):
+        for m in pattern.finditer(text):
+            start, end = m.start("snippet"), m.end("snippet")
+            if any(ign_start <= start and end <= ign_end for ign_start, ign_end in ignore_spans):
+                continue
+            if any(start <= ign_start and ign_end <= end for ign_start, ign_end in ignore_spans):
+                continue
+
+            snippet = m.group("snippet").strip()
+            clean_snippet = snippet.rstrip(".,;:!")
+            if clean_snippet and clean_snippet not in seen:
+                seen.add(clean_snippet)
+                matches.append(clean_snippet)
+
+    return matches
+
+
+def _generate_urgency_findings(page_text: str) -> List[Finding]:
+    """Generate structured FindingCategory.URGENCY_PRESSURE findings for detected urgency cues."""
+    findings: List[Finding] = []
+    urgency_snippets = detect_urgency_pressure(page_text)
+    for idx, snippet in enumerate(urgency_snippets):
+        ev = find_snippet_in_text(snippet, page_text)
+        if ev:
+            slug = re.sub(r"[^a-z0-9]+", "-", snippet.lower())[:30].strip("-")
+            findings.append(
+                Finding(
+                    id=f"finding-urgency-{slug or (idx + 1)}",
+                    category=FindingCategory.URGENCY_PRESSURE,
+                    severity=FindingSeverity.LOW,
+                    evidence_level=EvidenceLevel.EXPLICIT,
+                    evidence_text=ev,
+                    explanation=f"Urgency or scarcity language detected on page: '{ev}'.",
+                    confidence=0.85,
+                    missing_information=[],
+                    recommendation="Take time to evaluate your purchase decision without pressure. Artificial urgency cues are often used to accelerate checkout.",
+                )
+            )
+    return findings
+
+
+def _generate_missing_cancellation_finding() -> Finding:
+    """Generate a structured FindingCategory.MISSING_COMMITMENT_INFO finding for undisclosed cancellation terms."""
+    return Finding(
+        id="finding-missing-cancellation-terms",
+        category=FindingCategory.MISSING_COMMITMENT_INFO,
+        severity=FindingSeverity.LOW,
+        evidence_level=EvidenceLevel.UNKNOWN,
+        evidence_text="",
+        explanation="This subscription involves recurring charges or an automatic renewal, but cancellation terms or instructions are not stated on this page.",
+        confidence=0.85,
+        missing_information=["Cancellation terms, method, or cutoff deadline"],
+        recommendation="Confirm the cancellation procedure in account settings or terms of service before authorizing recurring billing.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Plan Extraction and Segmentation Logic (Phase 3)
 # ---------------------------------------------------------------------------
 
@@ -1269,6 +1375,17 @@ def run_deterministic_analysis(
             if p.is_ambiguous and p.ambiguity_reason:
                 result.unknowns.append(f"Ambiguous terms for {p.plan_name}: {p.ambiguity_reason}")
 
+        # Check for missing cancellation terms on recurring multi-plan pages
+        if result.is_recurring and not result.cancellation_terms:
+            if not any(
+                f.category in (FindingCategory.CANCELLATION_REFUND_CLARITY, FindingCategory.MISSING_COMMITMENT_INFO)
+                for f in result.findings
+            ):
+                result.findings.append(_generate_missing_cancellation_finding())
+                result.unknowns.append("Cancellation deadline and instructions are not stated on this page")
+
+        result.findings.extend(_generate_urgency_findings(page_text))
+
         return result
 
     # 4. Single Plan or General Page Extraction
@@ -1490,14 +1607,21 @@ def run_deterministic_analysis(
             )
         )
 
-    # 7. Record remaining unknowns
+    # 7. Record remaining unknowns and missing commitment terms
     if result.is_recurring or trial:
         if not result.cancellation_terms:
             result.unknowns.append("Cancellation deadline and instructions are not stated on this page")
+            if not any(
+                f.category in (FindingCategory.CANCELLATION_REFUND_CLARITY, FindingCategory.MISSING_COMMITMENT_INFO)
+                for f in result.findings
+            ):
+                result.findings.append(_generate_missing_cancellation_finding())
         if not result.future_charge_trigger and result.future_charge:
             result.unknowns.append("Exact billing trigger date is not explicitly specified")
         if not result.billing_interval and result.future_charge:
             result.unknowns.append("Billing interval frequency is not explicitly defined")
+
+    result.findings.extend(_generate_urgency_findings(page_text))
 
     # Clean duplicates in unknowns while preserving order
     dedup_unknowns: List[str] = []

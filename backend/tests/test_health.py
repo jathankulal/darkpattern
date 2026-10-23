@@ -38,7 +38,7 @@ def test_analyze_endpoint_valid_mock():
     payload = {
         "page_title": "Checkout - Example Store",
         "page_url": "https://example.com/checkout",
-        "page_text": "Total today: $19.99. Renews automatically at $19.99/mo.",
+        "page_text": "Total today: $19.99. Renews automatically at $19.99/mo. Cancel anytime.",
         "scan_id": "scan-12345",
         "locale": "en-US",
     }

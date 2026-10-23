@@ -60,6 +60,7 @@ class AIInterpreter(ABC):
         page_url: str,
         page_text: str,
         deterministic_context: Dict[str, Any],
+        locale: Optional[str] = None,
     ) -> AIInterpretationResult:
         """Analyze page text contextually. Must never raise an unhandled exception."""
         pass
@@ -74,6 +75,7 @@ class NullAIInterpreter(AIInterpreter):
         page_url: str,
         page_text: str,
         deterministic_context: Dict[str, Any],
+        locale: Optional[str] = None,
     ) -> AIInterpretationResult:
         return AIInterpretationResult(
             additional_findings=[],
@@ -81,6 +83,34 @@ class NullAIInterpreter(AIInterpreter):
             identified_ambiguities=[],
             ai_status="unconfigured",
         )
+
+
+# ---------------------------------------------------------------------------
+# Supported response languages — controls the language instruction injected
+# into the user prompt. English (default) requires no extra instruction.
+# Add a new entry here (and update docs) to support additional languages.
+# ---------------------------------------------------------------------------
+
+# Map from normalised BCP-47 primary tag → full language name used in the prompt.
+_SUPPORTED_LANGUAGES: dict[str, str] = {
+    "kn": "Kannada",
+    "hi": "Hindi",
+}
+
+
+def _normalise_locale(locale: Optional[str]) -> Optional[str]:
+    """Extract the primary language subtag from a BCP-47 locale string.
+
+    Examples:
+      "kn-IN"  -> "kn"
+      "hi"     -> "hi"
+      "en-US"  -> "en"
+      None/""  -> None
+    """
+    if not locale:
+        return None
+    primary = locale.split("-")[0].lower().strip()
+    return primary if primary else None
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +163,32 @@ no commentary, no extra keys:
 }"""
 
 
-def _build_user_prompt(page_title: str, page_text_bounded: str) -> str:
-    """Build the user message with strict delimiters around untrusted content."""
+def _build_user_prompt(
+    page_title: str,
+    page_text_bounded: str,
+    locale: Optional[str] = None,
+) -> str:
+    """Build the user message with strict delimiters around untrusted content.
+
+    When the locale resolves to a supported non-English language, a single
+    language instruction is prepended. evidence_text values must always remain
+    verbatim from the source page regardless of language.
+    """
+    primary = _normalise_locale(locale)
+    language_name = _SUPPORTED_LANGUAGES.get(primary or "") if primary else None
+
+    header_parts: list[str] = []
+    if language_name:
+        header_parts.append(
+            f"LANGUAGE INSTRUCTION: Respond in {language_name}. "
+            "Keep all evidence_text values as exact verbatim copies from the "
+            "webpage text — do not translate them."
+        )
+    header_parts.append(f"Page Title: {page_title}")
+
     return (
-        f"Page Title: {page_title}\n\n"
+        "\n\n".join(header_parts)
+        + "\n\n"
         "=== UNTRUSTED WEBPAGE TEXT BEGIN ===\n"
         f"{page_text_bounded}\n"
         "=== UNTRUSTED WEBPAGE TEXT END ==="
@@ -188,24 +240,39 @@ def _validate_and_build_findings(
             continue
         ev = ev.strip()
 
+        is_missing_info = (cat_str == FindingCategory.MISSING_COMMITMENT_INFO.value)
+
         if not ev:
-            rejected.append(f"finding[{idx}] empty evidence_text")
-            continue
-        if ev not in source_text:
-            rejected.append(f"finding[{idx}] evidence not verbatim in source: {ev[:80]!r}...")
-            continue
+            if not is_missing_info:
+                rejected.append(f"finding[{idx}] empty evidence_text")
+                continue
+            ev_level = EvidenceLevel.UNKNOWN
+            ev_text = ""
+        else:
+            if ev not in source_text:
+                rejected.append(f"finding[{idx}] evidence not verbatim in source: {ev[:80]!r}...")
+                continue
+            ev_level = EvidenceLevel.EXPLICIT
+            ev_text = ev[:1000]
 
         # --- Build validated Finding ---
         try:
+            raw_missing = f.get("missing_information", [])
+            missing_info_list = [str(m)[:500] for m in raw_missing] if isinstance(raw_missing, list) else []
+            if is_missing_info and not missing_info_list:
+                expl = str(f.get("explanation", ""))
+                if expl:
+                    missing_info_list = [expl[:200]]
+
             finding = Finding(
                 id=f"ai-finding-{idx + 1}",
                 category=FindingCategory(cat_str),
                 severity=FindingSeverity(sev_str),
-                evidence_level=EvidenceLevel.EXPLICIT,
-                evidence_text=ev[:1000],  # schema cap
+                evidence_level=ev_level,
+                evidence_text=ev_text,
                 explanation=str(f.get("explanation", ""))[:500],
                 confidence=0.8,
-                missing_information=[],
+                missing_information=missing_info_list,
                 recommendation=str(f.get("recommendation", ""))[:500],
             )
             validated.append(finding)
@@ -306,6 +373,7 @@ class SimpleLLMInterpreter(AIInterpreter):
         page_url: str,
         page_text: str,
         deterministic_context: Dict[str, Any],
+        locale: Optional[str] = None,
     ) -> AIInterpretationResult:
         # --- Guard: missing API key ---
         if not self.api_key or not self.api_key.strip():
@@ -319,7 +387,7 @@ class SimpleLLMInterpreter(AIInterpreter):
             "model": self.model,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _build_user_prompt(page_title, bounded_text)},
+                {"role": "user", "content": _build_user_prompt(page_title, bounded_text, locale=locale)},
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
