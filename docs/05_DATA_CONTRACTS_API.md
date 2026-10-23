@@ -47,10 +47,36 @@ Constraints:
     "cancellation_terms": "optional string",
     "unknowns": ["string"]
   },
+  "plans": [
+    {
+      "plan_name": "string",
+      "amount_due_now": "optional structured money value",
+      "future_charge": "optional structured money value",
+      "billing_interval": "optional string",
+      "trial_duration": "optional string",
+      "future_charge_trigger": "optional string",
+      "cancellation_terms": "optional string",
+      "unknowns": ["string"],
+      "is_ambiguous": false,
+      "ambiguity_reason": null,
+      "evidence_text": "string"
+    }
+  ],
   "price_integrity": {
     "observations": [],
-    "difference": "optional structured money value",
-    "reason": "known | disclosed_tax_or_shipping | unclear | not_comparable"
+    "difference": "optional structured money value (total baseline-to-total change: final_total - subtotal, or renewal - introductory)",
+    "reason": "known | disclosed_tax_or_shipping | unclear | not_comparable",
+    "advertised_price": "optional structured money value",
+    "checkout_subtotal": "optional structured money value",
+    "explicit_fees": [
+      {
+        "name": "Shipping | Estimated Tax | etc.",
+        "amount": "structured money value (negative for discounts)",
+        "context": "optional string"
+      }
+    ],
+    "final_total": "optional structured money value",
+    "unexplained_difference": "optional structured money value (unaccounted discrepancy when final_total > subtotal + disclosed fees)"
   },
   "checklist": ["string"],
   "limitations": ["string"]

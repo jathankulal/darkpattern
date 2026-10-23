@@ -13,9 +13,10 @@
 | D-008 | No composite Clarity Score in MVP. | Avoids arbitrary/unvalidated scoring. |
 | D-009 | No automatic purchase blocking or transaction action. | Keeps the user in control. |
 | D-010 | No database required for MVP. | Reduces complexity and privacy risk. |
+| D-011 | Wave 2 extension permissions: `activeTab`, `scripting`, host permission `http://127.0.0.1:8000/*` for local dev. No `<all_urls>`, `tabs`, `cookies`, `storage`, or `history`. Backend URL driven by `VITE_BACKEND_URL` build-time env var so future deployment does not require manifest changes. | Narrowest permissions supporting MVP per docs/07_PRIVACY_SECURITY.md §Extension permissions. Approved 2026-10-23. |
+| D-012 | OpenAI is the LLM provider for Phase 4. Used through the existing `SimpleLLMInterpreter` with stdlib `urllib` transport (no `openai` SDK dependency). Model is configurable via `OPENAI_MODEL` env var (default: `gpt-4o-mini`). API URL configurable via `OPENAI_API_URL` for Azure/local proxy/compatible providers. | Keeps the implementation zero-dependency, provider-switchable, and consistent with the existing interface. Resolves O-001. Approved 2026-10-23. |
 
 ## Open decisions — resolve before the relevant phase
-- O-001: Which hosted LLM provider/model will be used?
 - O-002: Which deployment target will host FastAPI, if remote deployment is needed?
 - O-003: Which currencies are required for the demo? Do not assume currency automatically.
 - O-004: Is the demo limited to English initially?
