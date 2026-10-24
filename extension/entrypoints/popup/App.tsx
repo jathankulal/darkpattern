@@ -271,14 +271,23 @@ export default function App() {
               {state.data.findings.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-lg p-3 text-center text-xs text-slate-600">
                   <span className="text-emerald-600 font-semibold block mb-0.5">
-                    ✓ No concerns detected
+                    ✓ No known warning signs found
                   </span>
-                  No recurring charges, trial traps, or hidden fees found in the visible text.
+                  We didn't find any known warning signs in the text we checked. This scan may not
+                  include everything on the page.
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {state.data.findings.map((f) => (
-                    <FindingCard key={f.id} finding={f} />
+                  {state.data.findings.map((f, index) => (
+                    <FindingCard
+                      key={f.id}
+                      finding={f}
+                      showExplanation={
+                        state.data.findings.findIndex(
+                          (candidate) => candidate.category === f.category,
+                        ) === index
+                      }
+                    />
                   ))}
                 </div>
               )}

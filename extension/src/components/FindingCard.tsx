@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import type { Finding, FindingSeverity } from '../types/api';
-import { CATEGORY_LABELS, SEVERITY_LABELS, EVIDENCE_LEVEL_LABELS } from '../lib/labels';
+import { SEVERITY_LABELS } from '../lib/labels';
 
 interface FindingCardProps {
   finding: Finding;
   initiallyExpanded?: boolean;
+  showExplanation?: boolean;
 }
 
 const SEVERITY_STYLES: Record<
@@ -41,20 +42,69 @@ const SEVERITY_STYLES: Record<
   },
 };
 
-function formatConfidence(confidence: number): string {
-  const pct = Math.round(confidence * 100);
-  if (confidence >= 0.85) return `High confidence (${pct}%)`;
-  if (confidence >= 0.6) return `Moderate confidence (${pct}%)`;
-  return `Low confidence (${pct}%)`;
+function getFindingPresentation(finding: Finding) {
+  switch (finding.category) {
+    case 'recurring_payment':
+      if (finding.missing_information.length > 0) {
+        return {
+          title: 'The renewal price is not shown',
+          explanation: "The page mentions recurring billing, but we couldn't find the price in the text we checked.",
+          nextStep: 'Check the amount and billing schedule before paying.',
+        };
+      }
+      return {
+        title: 'You may be charged again',
+        explanation: 'The page says this payment renews automatically.',
+        nextStep: 'Check the renewal price and how to cancel before signing up.',
+      };
+    case 'free_trial_conversion':
+      return {
+        title: 'This free trial may become a paid subscription',
+        explanation: 'The page says the trial is followed by a paid subscription.',
+        nextStep: 'Check when the trial ends and what you will be charged.',
+      };
+    case 'future_charge_disclosure':
+      return {
+        title: "The trial's later price is not clear",
+        explanation: "The page describes a trial, but we couldn't find its later price in the text we checked.",
+        nextStep: 'Confirm the price before starting the trial.',
+      };
+    case 'additional_fee':
+      return {
+        title: 'The checkout total is higher than the listed charges',
+        explanation: 'The final total is higher than the price and fees listed separately.',
+        nextStep: 'Review the price breakdown or ask the seller about the difference before paying.',
+      };
+    case 'cancellation_refund_clarity':
+      return {
+        title: 'There is a cancellation deadline',
+        explanation: 'The page gives a time limit for cancelling.',
+        nextStep: 'Make a note of the deadline if you sign up.',
+      };
+    case 'urgency_pressure':
+      return {
+        title: 'The page is urging you to act quickly',
+        explanation: 'A countdown or limited-availability message appears on the page. This alone does not show that the offer is deceptive.',
+        nextStep: 'Take time to decide whether the offer suits you.',
+      };
+    case 'missing_commitment_info':
+      return {
+        title: 'Check how to cancel',
+        explanation: "The text we checked doesn't show how to cancel.",
+        nextStep: 'Before signing up, check the account settings or terms for how to cancel.',
+      };
+  }
 }
 
-export function FindingCard({ finding, initiallyExpanded = true }: FindingCardProps) {
+export function FindingCard({
+  finding,
+  initiallyExpanded = true,
+  showExplanation = true,
+}: FindingCardProps) {
   const [expanded, setExpanded] = useState(initiallyExpanded);
   const style = SEVERITY_STYLES[finding.severity] ?? SEVERITY_STYLES.info;
-  const categoryLabel = CATEGORY_LABELS[finding.category] ?? finding.category;
   const severityLabel = SEVERITY_LABELS[finding.severity] ?? finding.severity;
-  const evidenceLevelLabel =
-    EVIDENCE_LEVEL_LABELS[finding.evidence_level] ?? finding.evidence_level;
+  const presentation = getFindingPresentation(finding);
 
   return (
     <div
@@ -74,11 +124,15 @@ export function FindingCard({ finding, initiallyExpanded = true }: FindingCardPr
               <span aria-hidden="true">{style.icon}</span>
               <span>{severityLabel}</span>
             </span>
-            <span className="text-xs font-semibold text-slate-800">{categoryLabel}</span>
+            <span role="heading" aria-level={4} className="text-xs font-semibold text-slate-800">
+              {presentation.title}
+            </span>
           </div>
-          <p className="text-xs text-slate-600 mt-1 line-clamp-2 leading-relaxed">
-            {finding.explanation}
-          </p>
+          {showExplanation && (
+            <p className="text-xs text-slate-600 mt-1 line-clamp-2 leading-relaxed">
+              {presentation.explanation}
+            </p>
+          )}
         </div>
 
         <svg
@@ -99,46 +153,25 @@ export function FindingCard({ finding, initiallyExpanded = true }: FindingCardPr
           {finding.evidence_text ? (
             <div>
               <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider block mb-1">
-                Evidence from page
+                Why we're warning you
               </span>
               <blockquote className="bg-white/80 p-2 rounded border-l-3 border-blue-500 text-slate-700 italic font-mono text-[11px] break-words">
-                "{finding.evidence_text}"
+                {finding.evidence_text}
               </blockquote>
             </div>
           ) : (
-            <div className="text-slate-500 italic text-[11px]">
-              (No direct text match — term is absent from page)
+            <div className="text-slate-500 text-[11px]">
+              <span className="font-medium block mb-1">Why we're warning you</span>
+              {finding.category === 'missing_commitment_info'
+                ? "We couldn't find cancellation instructions in the text we checked."
+                : "We couldn't find direct supporting words in the text we checked."}
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
-            <div>
-              <span className="text-slate-500 font-medium block">Detection type</span>
-              <span className="text-slate-700">{evidenceLevelLabel}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 font-medium block">Confidence</span>
-              <span className="text-slate-700">{formatConfidence(finding.confidence)}</span>
-            </div>
+          <div className="bg-white p-2 rounded border border-slate-200">
+            <span className="font-semibold text-blue-900 block mb-0.5">What to check:</span>
+            <p className="text-slate-700 leading-relaxed">{presentation.nextStep}</p>
           </div>
-
-          {finding.recommendation && (
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <span className="font-semibold text-blue-900 block mb-0.5">What to check:</span>
-              <p className="text-slate-700 leading-relaxed">{finding.recommendation}</p>
-            </div>
-          )}
-
-          {finding.missing_information && finding.missing_information.length > 0 && (
-            <div className="pt-1">
-              <span className="text-slate-500 font-medium block mb-1">Missing details:</span>
-              <ul className="list-disc pl-4 text-slate-600 space-y-0.5">
-                {finding.missing_information.map((item, idx) => (
-                  <li key={idx}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          )}
         </div>
       )}
     </div>
