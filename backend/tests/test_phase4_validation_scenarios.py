@@ -138,7 +138,8 @@ def test_scenario_c_unexplained_checkout_discrepancy():
     uf = unexplained_findings[0]
     assert uf.severity == FindingSeverity.HIGH
     assert validate_verbatim_evidence(uf.evidence_text, page_text)
-    assert "exceeds base price plus disclosed adjustments" in uf.explanation
+    assert "itemized charges detected in the scanned text" in uf.explanation
+    assert "not proof of deception" in uf.explanation
 
 
 # ---------------------------------------------------------------------------

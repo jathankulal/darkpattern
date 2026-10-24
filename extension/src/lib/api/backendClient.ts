@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const BACKEND_URL =
   (typeof import.meta !== 'undefined' &&
   (import.meta as unknown as { env?: { VITE_BACKEND_URL?: string } })?.env?.VITE_BACKEND_URL) ??
-  'http://127.0.0.1:8081';
+  'http://127.0.0.1:8000';
 
 // ---------------------------------------------------------------------------
 // Public error type

@@ -4,11 +4,18 @@ from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.ai import NullAIInterpreter, SimpleLLMInterpreter
-from app.analyzer import analyze_page_content
+from app.ai.proposals import (
+    AIProposalProvider,
+    NullAIProposalProvider,
+    OllamaAIProposalProvider,
+)
+from app.ai.knowledge_base import CandidateKnowledgeBase
+from app.analyzer import analyze_page_content, analyze_page_with_proposal_comparison
 from app.config import get_settings
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
+    AnalyzeWithComparisonResponse,
     HealthResponse,
 )
 
@@ -75,4 +82,31 @@ def analyze_page(request: AnalyzeRequest) -> AnalyzeResponse:
         request=request,
         settings=settings,
         ai_interpreter=ai_interpreter,
+    )
+
+
+def get_ai_proposal_provider() -> AIProposalProvider:
+    """Return the explicitly selected proposal provider."""
+    if settings.ai_proposal_provider == "ollama":
+        return OllamaAIProposalProvider(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_model,
+            timeout_seconds=settings.ollama_timeout_s,
+            max_text_chars=settings.llm_max_text_chars,
+            knowledge_base=CandidateKnowledgeBase(),
+        )
+    return NullAIProposalProvider()
+
+
+@app.post(
+    "/api/v1/analyze/compare",
+    response_model=AnalyzeWithComparisonResponse,
+    status_code=status.HTTP_200_OK,
+)
+def analyze_page_with_comparison(request: AnalyzeRequest) -> AnalyzeWithComparisonResponse:
+    """Opt-in endpoint for deterministic analysis plus untrusted AI comparison."""
+    return analyze_page_with_proposal_comparison(
+        request=request,
+        settings=settings,
+        ai_proposal_provider=get_ai_proposal_provider(),
     )

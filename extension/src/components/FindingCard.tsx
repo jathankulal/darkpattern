@@ -72,7 +72,7 @@ function getFindingPresentation(finding: Finding) {
     case 'additional_fee':
       return {
         title: 'The checkout total is higher than the listed charges',
-        explanation: 'The final total is higher than the price and fees listed separately.',
+        explanation: 'The scanned text does not account for the full difference. This is a financial concern, not proof of deception.',
         nextStep: 'Review the price breakdown or ask the seller about the difference before paying.',
       };
     case 'cancellation_refund_clarity':

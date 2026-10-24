@@ -750,8 +750,8 @@ class TestConfigSettings:
 # ===========================================================================
 
 class TestEndToEndWithMockedAI:
-    def test_analyze_merges_ai_and_deterministic_findings(self):
-        """AI findings are appended to deterministic findings (no duplicates)."""
+    def test_analyze_keeps_ai_findings_out_of_deterministic_results(self):
+        """Grounded AI findings are not included in authoritative findings."""
         interp = SimpleLLMInterpreter(api_key="sk-test", max_retries=0)
 
         page_text = (
@@ -759,10 +759,10 @@ class TestEndToEndWithMockedAI:
             "Cancel at least 24 hours before renewal."
         )
 
-        # AI returns a finding the deterministic layer doesn't produce
+        # The verbatim quote does not establish the AI-proposed urgency category.
         mock_response = _make_openai_response(
             findings=[{
-                "category": "cancellation_refund_clarity",
+                "category": "urgency_pressure",
                 "severity": "medium",
                 "evidence_text": "Cancel at least 24 hours before renewal",
                 "explanation": "Short cancellation window",
@@ -781,15 +781,17 @@ class TestEndToEndWithMockedAI:
 
         assert res.status in (AnalyzeStatus.OK, AnalyzeStatus.PARTIAL)
 
-        # Should have both deterministic and AI findings
         categories = [f.category for f in res.findings]
         assert FindingCategory.FREE_TRIAL_CONVERSION in categories
+        assert FindingCategory.URGENCY_PRESSURE not in categories
 
-        # Limitation should mention AI active
-        assert any("active" in lim.lower() for lim in res.limitations)
+        assert any(
+            "not included in trusted results" in limitation
+            for limitation in res.limitations
+        )
 
     def test_duplicate_category_findings_not_added(self):
-        """If AI and deterministic produce the same category, AI duplicate is skipped."""
+        """A matching AI proposal does not replace or duplicate deterministic findings."""
         interp = SimpleLLMInterpreter(api_key="sk-test", max_retries=0)
 
         page_text = "Start your free 7-day trial. Then $9.99 per month automatically."
@@ -867,27 +869,21 @@ class TestHTTPRequestConstruction:
         assert captured_payload["model"] == "gpt-4o"
 
     def test_call_api_sends_authorization_header(self):
-        """_call_api must set the Authorization header with Bearer token."""
+        """_call_api uses the configured bearer token without putting it in the body."""
         interp = SimpleLLMInterpreter(api_key="sk-test-header-check", max_retries=0)
         captured_request = {}
-
-        original_urlopen = urllib.request.urlopen
 
         def mock_urlopen(req, **kwargs):
             captured_request["url"] = req.full_url
             captured_request["method"] = req.method
             captured_request["headers"] = dict(req.headers)
             captured_request["data"] = json.loads(req.data.decode("utf-8"))
-            # Return a mock response
-            resp = _make_http_response(_make_openai_response(findings=[]))
-            return resp
+            return _make_http_response(_make_openai_response(findings=[]))
 
-        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch("app.ai.base.urllib.request.urlopen", side_effect=mock_urlopen):
             interp.interpret("Test", "http://x", "text", {})
 
-        assert "Authorization" in captured_request["headers"]
         assert captured_request["headers"]["Authorization"] == "Bearer sk-test-header-check"
-        # Verify the API key is NOT in the JSON body
         assert "sk-test-header-check" not in json.dumps(captured_request["data"])
 
     def test_system_prompt_is_first_message(self):

@@ -10,7 +10,7 @@ Analyzes visible page text on user request to explain pre-purchase financial com
 
 - **Node.js**: v20+ (tested with v24)
 - **npm**: v10+ (tested with v11)
-- **Backend**: Python 3.12 FastAPI server running at `http://127.0.0.1:8081` (see `backend/README.md`)
+- **Backend**: Python 3.12 FastAPI server running at `http://127.0.0.1:8000` (see `docs/05_DATA_CONTRACTS_API.md`)
 
 ---
 
@@ -23,7 +23,7 @@ npm install
 ```
 
 ### 2. Configure environment (optional)
-By default, the extension connects to `http://127.0.0.1:8081`. To customize the backend URL:
+By default, the extension connects to `http://127.0.0.1:8000`. To customize the backend URL:
 ```bash
 cp .env.example .env
 # Edit VITE_BACKEND_URL in .env if needed
@@ -60,7 +60,7 @@ WXT will build the development bundle to `.output/chrome-mv3-dev/` and watch for
 In alignment with data minimization principles (`docs/07_PRIVACY_SECURITY.md`):
 - `activeTab`: Access only the currently active tab when user triggers the action.
 - `scripting`: Programmatically inject the extraction logic on user action.
-- `http://127.0.0.1:8081/*` host permission: Allow network requests to the local backend.
+- `http://127.0.0.1:8000/*` host permission: Allow network requests to the local backend.
 - **No** `<all_urls>`, **no** background surveillance, **no** access to cookies, local storage, history, or form inputs (passwords, credit cards).
 
 ---

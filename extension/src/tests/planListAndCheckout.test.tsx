@@ -52,40 +52,82 @@ describe('PlanList Component', () => {
 });
 
 describe('PriceIntegrityTrail Component with Checkout Breakdown', () => {
-  it('renders itemized checkout calculation and unexplained difference warning', () => {
+  it('labels a free-trial renewal as the recurring price, not a price discrepancy', () => {
     const priceIntegrity: PriceIntegrity = {
       observations: [
-        { stage: 'advertised', amount: { amount: '50.00', currency: 'USD', kind: 'one_time' } },
-        { stage: 'shipping', amount: { amount: '5.00', currency: 'USD', kind: 'fee' } },
+        {
+          stage: 'trial',
+          amount: { amount: '0', currency: 'USD', kind: 'trial' },
+          context: 'Free trial period',
+        },
+        {
+          stage: 'renewal',
+          amount: {
+            amount: '29.00',
+            currency: 'USD',
+            kind: 'recurring',
+            interval: 'monthly',
+          },
+          context: 'Subsequent recurring charge after trial',
+        },
+      ],
+      difference: {
+        amount: '29.00',
+        currency: 'USD',
+        kind: 'recurring',
+        interval: 'monthly',
+      },
+      reason: 'known',
+    };
+
+    render(<PriceIntegrityTrail priceIntegrity={priceIntegrity} />);
+
+    expect(screen.getByText('Recurring price after trial:')).toBeDefined();
+    expect(screen.getByText(/This is the stated renewal price after the trial/i)).toBeDefined();
+    expect(screen.getByText('Trial and renewal prices are stated')).toBeDefined();
+    expect(screen.queryByText('Stage Price Difference:')).toBeNull();
+    expect(screen.queryByText(/Unexplained Price Difference/)).toBeNull();
+  });
+
+  it('explains the unexplained checkout difference without claiming deception', () => {
+    const priceIntegrity: PriceIntegrity = {
+      observations: [
+        { stage: 'subtotal', amount: { amount: '50.00', currency: 'USD', kind: 'one_time' } },
+        { stage: 'processing fee', amount: { amount: '4.00', currency: 'USD', kind: 'fee' } },
+        { stage: 'service fee', amount: { amount: '3.00', currency: 'USD', kind: 'fee' } },
         { stage: 'total', amount: { amount: '65.00', currency: 'USD', kind: 'one_time' } },
       ],
       difference: { amount: '15.00', currency: 'USD', kind: 'fee' },
       reason: 'unclear',
-      advertised_price: { amount: '50.00', currency: 'USD', kind: 'one_time' },
       checkout_subtotal: { amount: '50.00', currency: 'USD', kind: 'one_time' },
       explicit_fees: [
         {
-          name: 'Shipping',
-          amount: { amount: '5.00', currency: 'USD', kind: 'fee' },
-          context: 'Shipping & Delivery',
+          name: 'Processing Fee',
+          amount: { amount: '4.00', currency: 'USD', kind: 'fee' },
+        },
+        {
+          name: 'Service Fee',
+          amount: { amount: '3.00', currency: 'USD', kind: 'fee' },
         },
       ],
       final_total: { amount: '65.00', currency: 'USD', kind: 'one_time' },
-      unexplained_difference: { amount: '10.00', currency: 'USD', kind: 'fee' },
+      unexplained_difference: { amount: '8.00', currency: 'USD', kind: 'fee' },
     };
 
     render(<PriceIntegrityTrail priceIntegrity={priceIntegrity} />);
 
     // Warning alert should be present
-    expect(screen.getByText(/Unexplained Price Difference:/)).toBeDefined();
-    expect(screen.getAllByText(/\+USD 10\.00/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Not explained by charges found in the text:/)).toBeDefined();
+    expect(screen.getByText(/This is a difference in the scanned price breakdown, not proof of deception/i)).toBeDefined();
+    expect(screen.getAllByText(/\+USD 8\.00/).length).toBeGreaterThan(0);
 
     // Breakdown fields should be present
-    expect(screen.getByText('Advertised Price:')).toBeDefined();
     expect(screen.getByText('Checkout Subtotal:')).toBeDefined();
-    expect(screen.getByText('Shipping:')).toBeDefined();
+    expect(screen.getByText('Processing Fee:')).toBeDefined();
+    expect(screen.getByText('Service Fee:')).toBeDefined();
     expect(screen.getByText('Final Total:')).toBeDefined();
-    expect(screen.getByText(/Total Added to Subtotal:/)).toBeDefined();
+    expect(screen.getByText(/Final total above subtotal:/)).toBeDefined();
+    expect(screen.getByText(/itemized charges detected in the scanned text/i)).toBeDefined();
   });
 
   it('unambiguously distinguishes difference from unexplained_difference for the $15 / $6 example', () => {
@@ -109,8 +151,8 @@ describe('PriceIntegrityTrail Component with Checkout Breakdown', () => {
 
     render(<PriceIntegrityTrail priceIntegrity={priceIntegrity} />);
 
-    // Total added over subtotal ($15.00) is labeled in status footer
-    expect(screen.getByText(/Total Added to Subtotal:/)).toBeDefined();
+    // Difference from subtotal ($15.00) is labeled in status footer
+    expect(screen.getByText(/Final total above subtotal:/)).toBeDefined();
     expect(screen.getByText('USD 15.00')).toBeDefined();
 
     // Unexplained discrepancy ($6.00) is clearly labeled in alert banner and breakdown
@@ -183,4 +225,3 @@ describe('CommitmentMap Component Multi-Plan vs Single-Plan', () => {
     expect(screen.getByText('7 days')).toBeDefined();
   });
 });
-

@@ -156,6 +156,68 @@ def test_analyze_accepts_page_text_at_exact_limit():
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "page_text",
+    [
+        "",
+        "   \n ",
+        "Subscribe",
+        "Our bookstore opened in 1998 and carries fiction, history, and travel titles.",
+    ],
+)
+def test_analyze_returns_valid_response_for_empty_short_or_irrelevant_text(page_text):
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Information",
+            "page_url": "https://example.com/information",
+            "page_text": page_text,
+        },
+    )
+
+    assert response.status_code == 200
+    data = AnalyzeResponse.model_validate(response.json())
+    assert data.commitment_map.amount_due_now is None
+    assert data.commitment_map.future_charge is None
+    assert data.findings == []
+
+
+def test_analyze_rejects_malformed_page_text_shape():
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Checkout",
+            "page_url": "https://example.com/checkout",
+            "page_text": ["not", "a", "string"],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_analyze_does_not_infer_recurring_money_from_unrelated_numbers():
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Membership",
+            "page_url": "https://example.com/membership",
+            "page_text": (
+                "Membership renews automatically every month at the standard rate. "
+                "Model 7500; save 20% this week."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    data = AnalyzeResponse.model_validate(response.json())
+    assert data.commitment_map.amount_due_now is None
+    assert data.commitment_map.future_charge is None
+    assert any(
+        "no explicit subscription price" in unknown.lower()
+        for unknown in data.commitment_map.unknowns
+    )
+
+
 # ---------------------------------------------------------------------------
 # Wave 1 hardening: URL stripping
 # ---------------------------------------------------------------------------

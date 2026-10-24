@@ -3,15 +3,27 @@
 Combines deterministic extraction baseline with optional AI interpretation layer.
 """
 
+import re
 from decimal import Decimal
 from typing import List, Optional
 
 from app.ai.base import AIInterpreter, NullAIInterpreter
+from app.ai.comparison import compare_ai_proposals
+from app.ai.proposals import AIProposalProvider, NullAIProposalProvider
 from app.config import Settings
-from app.extraction import extract_cancellation_terms, run_deterministic_analysis
+from app.extraction import (
+    ExtractedCancellation,
+    detect_recurring_signals,
+    extract_cancellation_terms,
+    extract_prices_from_text,
+    run_deterministic_analysis,
+)
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
+    AnalyzeWithComparisonResponse,
+    AIProposalComparison,
+    AIProposalProviderStatus,
     AnalyzeStatus,
     CommitmentMap,
     EvidenceLevel,
@@ -20,6 +32,7 @@ from app.schemas import (
     FindingCategory,
     MoneyKind,
     MoneyValue,
+    MAX_ANALYZE_PLANS,
     PlanSummary,
     PriceIntegrity,
     PriceIntegrityReason,
@@ -123,6 +136,95 @@ def _find_matching_evidence(candidates: List[Optional[str]], page_text: str) -> 
     return ""
 
 
+def _find_price_evidence(amount: Optional[MoneyValue], page_text: str) -> str:
+    """Find the verbatim extracted price snippet matching a monetary value."""
+    if amount is None:
+        return ""
+    for price in extract_prices_from_text(page_text):
+        if price.amount == amount.amount and price.currency == amount.currency:
+            evidence = _find_matching_evidence([price.raw_snippet], page_text)
+            if evidence:
+                return evidence
+    return ""
+
+
+def _find_price_context_evidence(amount: Optional[MoneyValue], page_text: str) -> str:
+    """Find a bounded verbatim sentence containing the extracted price."""
+    price_evidence = _find_price_evidence(amount, page_text)
+    if not price_evidence:
+        return ""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", page_text):
+        sentence = sentence.strip()
+        if price_evidence in sentence and len(sentence) <= 1000:
+            return sentence
+    return price_evidence
+
+
+def _cancellation_timeline_event(
+    cancellation: Optional[ExtractedCancellation],
+    *,
+    page_text: str,
+    timepoint: str,
+) -> TimelineEvent:
+    """Describe cancellation wording without inferring an unstated cutoff."""
+    evidence = (
+        cancellation.terms
+        if cancellation and cancellation.terms in page_text
+        else ""
+    )
+    if cancellation and cancellation.deadline:
+        return TimelineEvent(
+            timepoint=timepoint,
+            title="Cancellation Cutoff Deadline",
+            amount=None,
+            value_type=TimelineValueType.OBSERVED,
+            description=(
+                f"The page states: {cancellation.deadline}. The calendar cutoff "
+                "depends on the stated renewal or trial timing."
+            ),
+            evidence_text=evidence,
+            is_critical_action=True,
+        )
+    if cancellation and cancellation.timing_unclear:
+        return TimelineEvent(
+            timepoint="Cancellation timing unclear",
+            title="Cancellation Timing Is Unclear",
+            amount=None,
+            value_type=TimelineValueType.UNRESOLVED,
+            description=(
+                "The page refers to the billing cycle but does not say when it "
+                "ends, so the exact cancellation cutoff cannot be determined."
+            ),
+            evidence_text=evidence,
+            is_critical_action=False,
+        )
+    if cancellation:
+        return TimelineEvent(
+            timepoint=timepoint,
+            title="Cancellation Instructions",
+            amount=None,
+            value_type=TimelineValueType.OBSERVED,
+            description=(
+                "Cancellation instructions appear on the page, but no cutoff "
+                "deadline is stated."
+            ),
+            evidence_text=evidence,
+            is_critical_action=False,
+        )
+    return TimelineEvent(
+        timepoint=timepoint,
+        title="Cancellation Cutoff Not Stated",
+        amount=None,
+        value_type=TimelineValueType.UNRESOLVED,
+        description=(
+            "No cancellation cutoff was found in the text checked. Whether "
+            "cancellation is needed to prevent renewal is not stated."
+        ),
+        evidence_text="",
+        is_critical_action=False,
+    )
+
+
 def build_plan_timeline(plan: PlanSummary, page_text: str) -> FinancialTimeline:
     """Construct a plan-specific financial commitment timeline."""
     events: List[TimelineEvent] = []
@@ -144,16 +246,21 @@ def build_plan_timeline(plan: PlanSummary, page_text: str) -> FinancialTimeline:
                 is_critical_action=False,
             )
         )
-        if plan.cancellation_terms:
+        cancellation = extract_cancellation_terms(page_text)
+        if plan.cancellation_terms and cancellation and cancellation.deadline:
             events.append(
-                TimelineEvent(
-                    timepoint="Before Trial Ends",
-                    title="Cancellation Deadline",
-                    amount=None,
-                    value_type=TimelineValueType.OBSERVED,
-                    description=f"Cancellation notice terms: {plan.cancellation_terms}.",
-                    evidence_text=plan.cancellation_terms if plan.cancellation_terms in page_text else plan.evidence_text,
-                    is_critical_action=True,
+                _cancellation_timeline_event(
+                    cancellation,
+                    page_text=page_text,
+                    timepoint="Before stated renewal cutoff",
+                )
+            )
+        elif plan.cancellation_terms:
+            events.append(
+                _cancellation_timeline_event(
+                    cancellation,
+                    page_text=page_text,
+                    timepoint="During trial",
                 )
             )
         if plan.future_charge:
@@ -195,7 +302,7 @@ def build_plan_timeline(plan: PlanSummary, page_text: str) -> FinancialTimeline:
                     value_type=TimelineValueType.UNRESOLVED,
                     description=f"Renewal price after {plan.trial_duration} trial is not disclosed for {plan.plan_name}.",
                     evidence_text="",
-                    is_critical_action=True,
+                    is_critical_action=False,
                 )
             )
             return FinancialTimeline(events=events, annualized_cost=None)
@@ -285,7 +392,6 @@ def build_financial_timeline(
             annualized_cost=None,
             note="Timeline cannot be established due to conflicting pricing terms on page.",
         )
-
     cancellation = extract_cancellation_terms(page_text)
 
     # Case 3: Free Trial with or without subsequent renewal
@@ -315,35 +421,26 @@ def build_financial_timeline(
         # Milestone 2: Cancellation Deadline
         if cancellation and cancellation.deadline:
             events.append(
-                TimelineEvent(
-                    timepoint="Before Trial Ends",
-                    title="Cancellation Cutoff Deadline",
-                    amount=None,
-                    value_type=TimelineValueType.OBSERVED,
-                    description=f"Cancellation required ({cancellation.deadline}) to prevent auto-renewal charge.",
-                    evidence_text=cancellation.deadline,
-                    is_critical_action=True,
+                _cancellation_timeline_event(
+                    cancellation,
+                    page_text=page_text,
+                    timepoint="Before stated renewal cutoff",
                 )
             )
         else:
-            cancel_snip = cancellation.terms if cancellation and cancellation.terms in page_text else ""
             events.append(
-                TimelineEvent(
-                    timepoint="Before Trial Ends",
-                    title="Cancellation Deadline (Unspecified)",
-                    amount=None,
-                    value_type=TimelineValueType.UNRESOLVED,
-                    description="Exact cancellation cutoff deadline is not disclosed on page. Review account settings prior to expiration.",
-                    evidence_text=cancel_snip,
-                    is_critical_action=True,
+                _cancellation_timeline_event(
+                    cancellation,
+                    page_text=page_text,
+                    timepoint="During trial",
                 )
             )
 
         # Milestone 3: First Future Charge (or Unresolved Renewal Price)
         if commitment_map.future_charge:
-            future_snip = _find_matching_evidence(
-                [det_result.future_charge_trigger] + det_result.evidence_snippets, page_text
-            ) or trial_snip
+            future_snip = _find_price_context_evidence(
+                commitment_map.future_charge, page_text
+            )
             events.append(
                 TimelineEvent(
                     timepoint=f"After {det_result.trial_duration}",
@@ -399,7 +496,7 @@ def build_financial_timeline(
                     value_type=TimelineValueType.UNRESOLVED,
                     description="The renewal charge amount upon trial expiration is not disclosed in the visible text.",
                     evidence_text="",
-                    is_critical_action=True,
+                    is_critical_action=False,
                 )
             )
             return FinancialTimeline(
@@ -410,14 +507,16 @@ def build_financial_timeline(
 
     # Case 4: Subscription with Upfront/Recurring Charges (No Trial)
     if commitment_map.future_charge:
-        future_snip = _find_matching_evidence(
-            det_result.evidence_snippets + [det_result.future_charge_trigger], page_text
+        price_snip = _find_price_evidence(commitment_map.future_charge, page_text)
+        recurring_signal, recurring_evidence = detect_recurring_signals(page_text)
+        renewal_snip = (
+            _find_matching_evidence([recurring_evidence], page_text)
+            if recurring_signal
+            else ""
         )
 
         if commitment_map.amount_due_now:
-            due_snip = _find_matching_evidence(
-                det_result.evidence_snippets, page_text
-            ) or future_snip
+            due_snip = _find_price_evidence(commitment_map.amount_due_now, page_text)
             events.append(
                 TimelineEvent(
                     timepoint="Today",
@@ -432,14 +531,18 @@ def build_financial_timeline(
 
         if cancellation and cancellation.deadline:
             events.append(
-                TimelineEvent(
-                    timepoint="Before Renewal",
-                    title="Cancellation Cutoff Deadline",
-                    amount=None,
-                    value_type=TimelineValueType.OBSERVED,
-                    description=f"Notice required ({cancellation.deadline}) to prevent renewal.",
-                    evidence_text=cancellation.deadline,
-                    is_critical_action=True,
+                _cancellation_timeline_event(
+                    cancellation,
+                    page_text=page_text,
+                    timepoint="Before stated renewal cutoff",
+                )
+            )
+        elif cancellation:
+            events.append(
+                _cancellation_timeline_event(
+                    cancellation,
+                    page_text=page_text,
+                    timepoint="Cancellation",
                 )
             )
 
@@ -453,7 +556,7 @@ def build_financial_timeline(
                 amount=commitment_map.future_charge,
                 value_type=TimelineValueType.OBSERVED,
                 description=f"Subsequent recurring charge of {commitment_map.future_charge.currency} {commitment_map.future_charge.amount}.",
-                evidence_text=future_snip,
+                evidence_text=renewal_snip,
                 is_critical_action=False,
             )
         )
@@ -465,7 +568,7 @@ def build_financial_timeline(
                 amount=commitment_map.future_charge,
                 value_type=TimelineValueType.OBSERVED,
                 description=f"Renews automatically at {commitment_map.future_charge.currency} {commitment_map.future_charge.amount} per {interval_name} until cancelled.",
-                evidence_text=future_snip,
+                evidence_text=renewal_snip,
                 is_critical_action=False,
             )
         )
@@ -480,8 +583,12 @@ def build_financial_timeline(
                     title="Annualized Recurring Commitment",
                     amount=annual_cost,
                     value_type=TimelineValueType.CALCULATED,
-                    description=f"Projected 12-month recurring expenditure of {annual_cost.currency} {annual_cost.amount}.",
-                    evidence_text=future_snip,
+                    description=(
+                        f"Calculated 12-month projection of {annual_cost.currency} "
+                        f"{annual_cost.amount} from the stated recurring price and billing "
+                        "interval; this is not a directly observed charge."
+                    ),
+                    evidence_text=price_snip,
                     is_critical_action=False,
                 )
             )
@@ -495,9 +602,7 @@ def build_financial_timeline(
     # Case 5: One-Time Purchase (No Recurring Commitment)
     one_time_amount = price_integrity.final_total or commitment_map.amount_due_now
     if one_time_amount:
-        ot_snip = _find_matching_evidence(
-            det_result.evidence_snippets + [one_time_amount.amount], page_text
-        )
+        ot_snip = _find_price_context_evidence(one_time_amount, page_text)
         events.append(
             TimelineEvent(
                 timepoint="Today (Checkout)",
@@ -730,12 +835,8 @@ def analyze_page_content(
         locale=request.locale,
     )
 
-    # 3. Combine findings (deterministic takes priority; AI findings appended if grounded)
+    # 3. Trusted findings come only from deterministic analysis.
     findings = list(det_result.findings)
-    for ai_f in ai_result.additional_findings:
-        # Avoid duplicate findings for same category
-        if not any(f.category == ai_f.category for f in findings):
-            findings.append(ai_f)
 
     # Post-validation: ensure explicit findings have evidence grounded in page text
     validated_findings: List[Finding] = []
@@ -783,7 +884,10 @@ def analyze_page_content(
         "Analysis based strictly on bounded visible text submitted by browser extension.",
     ]
     if ai_result.ai_status == "active":
-        limitations.append("Contextual AI interpretation layer active.")
+        limitations.append(
+            "The optional AI interpreter ran, but its findings are not included in "
+            "trusted results; findings and financial calculations remain deterministic."
+        )
     elif ai_result.ai_status == "unconfigured":
         limitations.append("Deterministic extraction applied; AI contextual interpretation not configured.")
     elif ai_result.ai_status == "failed":
@@ -805,9 +909,14 @@ def analyze_page_content(
     if det_result.conflicts_detected or (det_result.trial_duration and not det_result.future_charge) or has_ambiguity or has_unexplained:
         status = AnalyzeStatus.PARTIAL
 
-    # 9. Build Plan Timelines (if plans detected)
-    for p in det_result.plans:
-        p.timeline = build_plan_timeline(p, request.page_text)
+    # 9. Build timelines for the bounded response copy, preserving extracted plans.
+    response_plans = [
+        p.model_copy(
+            deep=True,
+            update={"timeline": build_plan_timeline(p, request.page_text)},
+        )
+        for p in det_result.plans[:MAX_ANALYZE_PLANS]
+    ]
 
     # 10. Build Primary Financial Commitment Timeline (Phase 7)
     timeline = build_financial_timeline(
@@ -822,9 +931,76 @@ def analyze_page_content(
         summary=summary,
         findings=findings,
         commitment_map=commitment_map,
-        plans=det_result.plans,
+        plans=response_plans,
         price_integrity=price_integrity,
         checklist=checklist,
         limitations=limitations,
         timeline=timeline,
+    )
+
+
+def analyze_page_with_proposal_comparison(
+    request: AnalyzeRequest,
+    settings: Settings,
+    ai_proposal_provider: Optional[AIProposalProvider] = None,
+) -> AnalyzeWithComparisonResponse:
+    """Run deterministic analysis and an isolated, opt-in proposal comparison."""
+    analysis = analyze_page_content(
+        request=request,
+        settings=settings,
+        ai_interpreter=NullAIInterpreter(),
+    )
+    analysis.limitations = [
+        limitation
+        for limitation in analysis.limitations
+        if limitation
+        != "Deterministic extraction applied; AI contextual interpretation not configured."
+    ]
+    provider = (
+        ai_proposal_provider
+        if ai_proposal_provider is not None
+        else NullAIProposalProvider()
+    )
+
+    try:
+        if not provider.is_configured:
+            comparison = AIProposalComparison(
+                status=AIProposalProviderStatus.UNCONFIGURED,
+            )
+            analysis.limitations.append(
+                "Trusted findings and financial calculations remain deterministic; "
+                "the AI proposal provider is not configured."
+            )
+        else:
+            proposals = provider.propose(
+                page_title=request.page_title,
+                page_url=request.page_url,
+                page_text=request.page_text,
+                locale=request.locale,
+            )
+            results = compare_ai_proposals(
+                proposals=proposals,
+                deterministic_findings=analysis.findings,
+                page_text=request.page_text,
+            )
+            comparison = AIProposalComparison(
+                status=AIProposalProviderStatus.ACTIVE,
+                results=results,
+            )
+            analysis.limitations.append(
+                "Trusted findings and financial calculations remain deterministic; AI "
+                "proposals are separate untrusted candidates and do not validate or modify them."
+            )
+    except Exception:
+        comparison = AIProposalComparison(
+            status=AIProposalProviderStatus.FAILED,
+        )
+        analysis.limitations.append(
+            "Trusted findings and financial calculations remain deterministic; AI proposal "
+            "analysis failed and was not applied."
+        )
+
+    return AnalyzeWithComparisonResponse(
+        analysis=analysis,
+        ai_comparison=comparison,
     )

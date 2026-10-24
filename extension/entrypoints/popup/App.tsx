@@ -17,6 +17,8 @@ import { FindingCard } from '../../src/components/FindingCard';
 import { PriceIntegrityTrail } from '../../src/components/PriceIntegrityTrail';
 import { Checklist } from '../../src/components/Checklist';
 import { FinancialTimeline } from '../../src/components/FinancialTimeline';
+import { RiskOverview } from '../../src/components/RiskOverview';
+import { SafeAlternativeFinder } from '../../src/components/SafeAlternativeFinder';
 import { ErrorState } from '../../src/components/ErrorState';
 import { LanguageSelector } from '../../src/components/LanguageSelector';
 import {
@@ -169,14 +171,18 @@ export default function App() {
             onLanguageChange={handleLanguageChange}
             disabled={state.type === 'extracting' || state.type === 'analyzing'}
           />
-          {health && (
+          {state.type === 'results' ? (
+            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200">
+              Page analyzed
+            </span>
+          ) : health ? (
             <span
               className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full border border-slate-200"
               title={`Backend connected (${health.version})`}
             >
               Ready
             </span>
-          )}
+          ) : null}
         </div>
       </header>
 
@@ -238,89 +244,82 @@ export default function App() {
               </div>
             )}
 
-            {/* Summary Box */}
-            <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs">
-              <h2 className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                Summary
-              </h2>
-              <p className="text-xs text-slate-800 leading-relaxed">{state.data.summary}</p>
-            </div>
+            <RiskOverview data={state.data} />
 
-            {/* Financial Commitment Map */}
-            <CommitmentMap
-              commitmentMap={state.data.commitment_map}
-              isMultiPlan={Boolean(state.data.plans && state.data.plans.length > 1)}
-            />
-
-            {/* Financial Commitment Timeline */}
-            <FinancialTimeline timeline={state.data.timeline} />
-
-            {/* Pricing Plans Breakdown (when multiple plans or individual tiers detected) */}
-            {state.data.plans && state.data.plans.length > 0 && (
-              <PlanList plans={state.data.plans} />
-            )}
-
-            {/* Findings Section */}
-            <section aria-labelledby="findings-heading" className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 id="findings-heading" className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Findings ({state.data.findings.length})
-                </h3>
-              </div>
-
-              {state.data.findings.length === 0 ? (
-                <div className="bg-white border border-slate-200 rounded-lg p-3 text-center text-xs text-slate-600">
-                  <span className="text-emerald-600 font-semibold block mb-0.5">
-                    ✓ No known warning signs found
-                  </span>
-                  We didn't find any known warning signs in the text we checked. This scan may not
-                  include everything on the page.
+            <details className="group bg-white border border-slate-200 rounded-lg shadow-xs">
+              <summary className="cursor-pointer list-none px-3 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                View detailed analysis
+              </summary>
+              <div className="p-3 pt-0 space-y-3">
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <h2 className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                    Analyzer summary
+                  </h2>
+                  <p className="text-xs text-slate-800 leading-relaxed">{state.data.summary}</p>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {state.data.findings.map((f, index) => (
-                    <FindingCard
-                      key={f.id}
-                      finding={f}
-                      showExplanation={
-                        state.data.findings.findIndex(
-                          (candidate) => candidate.category === f.category,
-                        ) === index
-                      }
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
 
-            {/* Price Integrity Trail */}
-            <PriceIntegrityTrail priceIntegrity={state.data.price_integrity} />
+                <CommitmentMap
+                  commitmentMap={state.data.commitment_map}
+                  isMultiPlan={Boolean(state.data.plans && state.data.plans.length > 1)}
+                />
+                <FinancialTimeline timeline={state.data.timeline} />
+                {state.data.plans && state.data.plans.length > 0 && (
+                  <PlanList plans={state.data.plans} />
+                )}
+                <SafeAlternativeFinder
+                  commitmentMap={state.data.commitment_map}
+                  isMultiPlan={Boolean(state.data.plans && state.data.plans.length > 1)}
+                />
 
-            {/* Ask Before You Pay Checklist */}
-            <Checklist items={state.data.checklist} />
+                <section aria-labelledby="findings-heading" className="space-y-2">
+                  <h3 id="findings-heading" className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    All findings ({state.data.findings.length})
+                  </h3>
+                  {state.data.findings.length === 0 ? (
+                    <div className="bg-white border border-slate-200 rounded-lg p-3 text-center text-xs text-slate-600">
+                      We didn't find any known warning signs in the text we checked. This scan may not
+                      include everything on the page.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {state.data.findings.map((finding, index) => (
+                        <FindingCard
+                          key={finding.id}
+                          finding={finding}
+                          showExplanation={
+                            state.data.findings.findIndex(
+                              (candidate) => candidate.category === finding.category,
+                            ) === index
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
 
-            {/* Limitations Notice */}
-            {state.data.limitations && state.data.limitations.length > 0 && (
-              <div className="bg-slate-100 rounded-lg p-2.5 border border-slate-200 text-[11px] text-slate-500">
-                <span className="font-semibold text-slate-700 block mb-0.5">Limitations:</span>
-                <ul className="list-disc pl-4 space-y-0.5">
-                  {state.data.limitations.map((lim, idx) => (
-                    <li key={idx}>{lim}</li>
-                  ))}
-                </ul>
+                <PriceIntegrityTrail priceIntegrity={state.data.price_integrity} />
+                <Checklist items={state.data.checklist} />
+
+                {state.data.limitations.length > 0 && (
+                  <div className="bg-slate-100 rounded-lg p-2.5 border border-slate-200 text-[11px] text-slate-500">
+                    <span className="font-semibold text-slate-700 block mb-0.5">Limitations:</span>
+                    <ul className="list-disc pl-4 space-y-0.5">
+                      {state.data.limitations.map((limitation, index) => (
+                        <li key={index}>{limitation}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
-            )}
+            </details>
 
-            {/* Rescan Button */}
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={handleScan}
-                className="w-full py-2 px-3 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-md transition-colors shadow-xs"
-              >
-                Scan page again
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleScan}
+              className="w-full py-2 px-3 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-md transition-colors shadow-xs"
+            >
+              Scan page again
+            </button>
           </div>
         )}
       </main>

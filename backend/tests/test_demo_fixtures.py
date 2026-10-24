@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from app.analyzer import analyze_page_content
 from app.config import Settings
-from app.schemas import AnalyzeRequest, AnalyzeStatus, FindingCategory, PriceIntegrityReason
+from app.schemas import AnalyzeRequest, AnalyzeStatus, EvidenceLevel, FindingCategory, FindingSeverity, PriceIntegrityReason
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent / "fixtures"
 settings = Settings(environment="test", llm_api_key=None)
@@ -115,3 +115,29 @@ def test_fixture_4_multi_plan_pricing():
     assert pro_plan.trial_duration == "7 days"
     assert pro_plan.future_charge is not None
     assert pro_plan.future_charge.amount == "35.00"
+
+
+def test_fixture_5_urgency_countdown_has_scoring_evidence():
+    html_path = FIXTURES_DIR / "5_urgency_countdown.html"
+    assert html_path.exists(), f"Fixture missing: {html_path}"
+    page_text = _extract_text_from_html(html_path.read_text(encoding="utf-8"))
+
+    req = AnalyzeRequest(
+        page_title="Harbor & Pine - Limited Offer",
+        page_url="http://localhost:8080/5_urgency_countdown.html",
+        page_text=page_text,
+    )
+    result = analyze_page_content(req, settings)
+
+    urgency_findings = [
+        finding
+        for finding in result.findings
+        if finding.category == FindingCategory.URGENCY_PRESSURE
+    ]
+    assert len(urgency_findings) == 1
+    finding = urgency_findings[0]
+    assert finding.evidence_text == "Offer ends in 10 minutes"
+    assert finding.evidence_text in page_text
+    assert finding.evidence_level == EvidenceLevel.EXPLICIT
+    assert finding.severity == FindingSeverity.LOW
+    assert finding.confidence == 0.85

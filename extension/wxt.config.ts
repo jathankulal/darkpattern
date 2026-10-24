@@ -1,6 +1,6 @@
 import { defineConfig } from 'wxt';
 
-const backendUrl = process.env.VITE_BACKEND_URL ?? 'http://127.0.0.1:8081';
+const backendUrl = process.env.VITE_BACKEND_URL ?? 'http://127.0.0.1:8000';
 
 // See https://wxt.dev/api/reference/wxt/interfaces/inlineconfig.html
 export default defineConfig({

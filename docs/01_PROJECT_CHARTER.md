@@ -55,7 +55,7 @@ Do not merely label a page “bad.” Explain the specific financial commitment 
 - Do not train a custom ML model.
 - Do not build a multi-agent framework.
 - Do not promise detection of every dark pattern.
-- Do not produce a single composite “Clarity Score 0–100” until its meaning and validation are defined.
+- Do not describe a risk indicator as a probability or guarantee of safety; its evidence scope, formula, and limitations must be visible.
 - Do not implement cancellation friction detection as a complete multi-step workflow in the first MVP; it may be a later phase.
 
 ## Product principles

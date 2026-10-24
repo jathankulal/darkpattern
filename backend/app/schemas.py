@@ -4,7 +4,10 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import List, Literal, Optional
 from urllib.parse import urlparse, urlunparse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+MAX_ANALYZE_PLANS = 10
 
 
 class AnalyzeStatus(str, Enum):
@@ -166,6 +169,101 @@ class Finding(BaseModel):
         if isinstance(v, list):
             return [str(item)[:_MAX_ITEM_TEXT] for item in v]
         return v
+
+
+class AIProposal(BaseModel):
+    """Untrusted AI candidate, kept separate from verified deterministic findings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_pattern: str = Field(
+        min_length=1,
+        max_length=_MAX_ITEM_TEXT,
+        description="AI-proposed pattern label; not an approved detection category",
+    )
+    proposed_category: Optional[FindingCategory] = Field(
+        default=None,
+        description="Existing approved category, when applicable",
+    )
+    evidence_quote: Optional[str] = Field(
+        max_length=_MAX_EVIDENCE_TEXT,
+        description="Proposed page-text quote, or null when no quote is available",
+    )
+    explanation: str = Field(
+        min_length=1,
+        max_length=_MAX_FINDING_TEXT,
+        description="AI-provided rationale; untrusted until independently validated",
+    )
+    recommendation: Optional[str] = Field(
+        default=None,
+        max_length=_MAX_FINDING_TEXT,
+        description="Optional AI-proposed user recommendation; untrusted",
+    )
+    provenance: Literal["ai"] = "ai"
+    status: Literal["pending_validation"] = "pending_validation"
+
+    @field_validator("candidate_pattern", "explanation")
+    @classmethod
+    def reject_blank_required_text(cls, value: str) -> str:
+        """Reject whitespace-only required values without rewriting their content."""
+        if not value.strip():
+            raise ValueError("Value must not be blank")
+        return value
+
+    @field_validator("evidence_quote")
+    @classmethod
+    def reject_blank_evidence_quote(cls, value: Optional[str]) -> Optional[str]:
+        """Require a meaningful quote when one is supplied; null means none is available."""
+        if value is not None and not value.strip():
+            raise ValueError("Evidence quote must be non-blank when supplied")
+        return value
+
+
+class AIProposalProviderStatus(str, Enum):
+    UNCONFIGURED = "unconfigured"
+    ACTIVE = "active"
+    FAILED = "failed"
+
+
+class ProposalComparisonStatus(str, Enum):
+    MATCHED_EXISTING_FINDING = "matched_existing_finding"
+    ADDITIONAL_CANDIDATE = "additional_candidate"
+    CONFLICTING_CANDIDATE = "conflicting_candidate"
+    CATEGORY_MISMATCH = "category_mismatch"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
+class ProposalCategoryConsistency(str, Enum):
+    CONSISTENT = "consistent"
+    INCONSISTENT = "inconsistent"
+    UNVERIFIED = "unverified"
+
+
+class EvidenceValidationStatus(str, Enum):
+    QUOTE_VERIFIED = "quote_verified"
+    MISSING_QUOTE = "missing_quote"
+    QUOTE_NOT_FOUND = "quote_not_found"
+    INVALID_PROPOSAL = "invalid_proposal"
+
+
+class AIProposalComparisonResult(BaseModel):
+    """One untrusted proposal's comparison outcome, not a trusted finding."""
+
+    proposal_index: int = Field(ge=0)
+    proposal: Optional[AIProposal] = None
+    status: ProposalComparisonStatus
+    category_consistency: ProposalCategoryConsistency = (
+        ProposalCategoryConsistency.UNVERIFIED
+    )
+    evidence_status: EvidenceValidationStatus
+    reason: str = Field(max_length=500)
+
+
+class AIProposalComparison(BaseModel):
+    """Status and per-proposal outcomes from the optional analysis pipeline."""
+
+    status: AIProposalProviderStatus
+    results: List[AIProposalComparisonResult] = Field(default_factory=list)
 
 
 class CommitmentMap(BaseModel):
@@ -406,7 +504,7 @@ class AnalyzeResponse(BaseModel):
     commitment_map: CommitmentMap = Field(description="Structured financial commitment mapping")
     plans: List[PlanSummary] = Field(
         default_factory=list,
-        max_length=10,
+        max_length=MAX_ANALYZE_PLANS,
         description="Plan-specific commitment breakdown when multiple plans are present",
     )
     price_integrity: PriceIntegrity = Field(description="Price comparison and disclosure trail")
@@ -424,6 +522,13 @@ class AnalyzeResponse(BaseModel):
         default=None,
         description="Chronological timeline of financial commitments, renewals, and deadlines",
     )
+
+
+class AnalyzeWithComparisonResponse(BaseModel):
+    """Opt-in analysis response with a separate, untrusted AI comparison."""
+
+    analysis: AnalyzeResponse
+    ai_comparison: AIProposalComparison
 
 
 class HealthResponse(BaseModel):

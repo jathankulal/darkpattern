@@ -113,7 +113,7 @@ describe('FinancialTimeline Component', () => {
     expect(screen.getByText(/"14-day free trial"/i)).toBeDefined();
   });
 
-  it('renders unresolved renewal charge with high-visibility indicator', () => {
+  it('renders unresolved renewal charge without claiming an action is required', () => {
     const unresolvedTimeline: FinancialTimelineType = {
       events: [
         {
@@ -132,19 +132,19 @@ describe('FinancialTimeline Component', () => {
           value_type: 'unresolved',
           description: 'The renewal charge amount upon trial expiration is not disclosed in the visible text.',
           evidence_text: '',
-          is_critical_action: true,
+          is_critical_action: false,
         },
       ],
       annualized_cost: null,
       annualized_cost_assumptions: null,
-      note: 'Renewal price after trial is not stated on this page.',
+      note: 'Renewal price after trial was not found in the text checked.',
     };
 
     render(<FinancialTimeline timeline={unresolvedTimeline} />);
 
     expect(screen.getByText('Renewal Charge Amount (Undisclosed)')).toBeDefined();
     expect(screen.getByText('Unresolved')).toBeDefined();
-    expect(screen.getByText('⚠️ Action Required')).toBeDefined();
-    expect(screen.getByText(/Renewal price after trial is not stated on this page/i)).toBeDefined();
+    expect(screen.queryByText('⚠️ Action Required')).toBeNull();
+    expect(screen.getByText(/Renewal price after trial was not found in the text checked/i)).toBeDefined();
   });
 });

@@ -28,7 +28,7 @@ You are a coding assistant working on Dark Pattern Guardian. The repository's `/
 - Mark missing information as unknown.
 - Transparent recurring billing is not automatically a dark pattern.
 - Do not make legal conclusions or accuse a merchant of fraud.
-- Do not implement a composite score unless a later approved requirement defines and validates it.
+- Keep the approved risk indicator deterministic and evidence-grounded; do not treat its uncalibrated score as a probability or safety guarantee.
 
 ### Coding standards
 - Keep code modular, typed, and testable.

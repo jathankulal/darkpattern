@@ -34,6 +34,8 @@ export function PriceIntegrityTrail({ priceIntegrity }: PriceIntegrityTrailProps
   } = priceIntegrity;
 
   const hasCheckoutComparison = Boolean(checkout_subtotal || advertised_price || final_total || (explicit_fees && explicit_fees.length > 0));
+  const isTrialToPaidTransition = observations.some((observation) => observation.stage === 'trial')
+    && observations.some((observation) => observation.stage === 'renewal');
 
   return (
     <section
@@ -71,12 +73,13 @@ export function PriceIntegrityTrail({ priceIntegrity }: PriceIntegrityTrailProps
         >
           <span className="text-rose-600 font-bold" aria-hidden="true">⚠️</span>
           <div>
-            <strong className="font-semibold">Unexplained Price Difference: </strong>
-            Final total is{' '}
+            <strong className="font-semibold">Not explained by charges found in the text: </strong>
             <strong className="font-bold underline">
               +{formatMoney(unexplained_difference)}
-            </strong>{' '}
-            higher than the base price plus disclosed fees.
+            </strong>
+            <p className="mt-1">
+              This is a difference in the scanned price breakdown, not proof of deception.
+            </p>
           </div>
         </div>
       )}
@@ -173,17 +176,36 @@ export function PriceIntegrityTrail({ priceIntegrity }: PriceIntegrityTrailProps
       <div className="pt-1 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
         <div>
           <span className="font-medium text-slate-700">Status: </span>
-          <span>{REASON_LABELS[reason] ?? reason}</span>
+          <span>
+            {isTrialToPaidTransition
+              ? 'Trial and renewal prices are stated'
+              : REASON_LABELS[reason] ?? reason}
+          </span>
         </div>
         {difference && (
           <div>
             <span className="font-medium text-slate-700">
-              {hasCheckoutComparison ? 'Total Added to Subtotal: ' : 'Stage Price Difference: '}
+              {isTrialToPaidTransition
+                ? 'Recurring price after trial: '
+                : hasCheckoutComparison
+                  ? 'Final total above subtotal: '
+                  : 'Stage Price Difference: '}
             </span>
             <span className="font-semibold text-slate-900">{formatMoney(difference)}</span>
           </div>
         )}
       </div>
+      {difference && hasCheckoutComparison && (
+        <p className="text-[11px] text-slate-500">
+          This is the change from subtotal to final total; the unexplained amount above is what
+          remains after the itemized charges detected in the scanned text.
+        </p>
+      )}
+      {difference && isTrialToPaidTransition && (
+        <p className="text-[11px] text-slate-500">
+          This is the stated renewal price after the trial, not an unexplained checkout fee.
+        </p>
+      )}
     </section>
   );
 }

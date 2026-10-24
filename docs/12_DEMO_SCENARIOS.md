@@ -60,8 +60,20 @@ Expected behavior:
 - Do not reveal secrets or change schema.
 - Only report relevant commercial terms with evidence.
 
+## Scenario F — Explicit offer countdown
+Fixture: `fixtures/5_urgency_countdown.html`
+
+The page states: “Offer ends in 10 minutes.”
+
+Expected behavior:
+- Detect an explicit `urgency_pressure` finding and preserve the exact countdown wording as evidence.
+- Show the finding's neutral severity and evidence strength.
+- The extension's evidence-based risk indicator may include this finding using its documented scoring formula.
+- Do not claim the countdown is false or that the merchant is deceptive; the scan cannot verify whether the deadline is genuine.
+
 ## Demo narrative
 1. Scan Scenario A and reveal future commitment.
 2. Scan Scenario B2 and show an observed price difference with uncertain reason.
 3. Scan Scenario C to demonstrate restraint and avoid a false positive.
-4. End with the checklist: “What will I pay later?”, “When will I be charged?”, “How do I cancel?”
+4. Scan Scenario F to demonstrate a supported urgency indicator without making a claim about whether the countdown is genuine.
+5. End with the checklist: “What will I pay later?”, “When will I be charged?”, “How do I cancel?”

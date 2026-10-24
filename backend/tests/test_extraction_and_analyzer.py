@@ -30,6 +30,7 @@ from app.ai.base import (
 from app.analyzer import analyze_page_content
 from app.config import Settings
 from app.extraction import (
+    detect_recurring_signals,
     detect_urgency_pressure,
     extract_prices_from_text,
     extract_trial_terms,
@@ -437,6 +438,33 @@ def test_phase3_multiple_plans_different_monthly_prices():
     assert not any("conflicting" in u.lower() for u in res.commitment_map.unknowns)
 
 
+def test_ordinary_membership_prose_is_not_detected_as_pricing_plans():
+    page_text = (
+        "Example Membership\n"
+        "Choose the membership that works for you.\n"
+        "Cancel anytime.\n"
+        "Contact support for details about your account."
+    )
+
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Example Membership",
+            "page_url": "https://example.test/membership",
+            "page_text": page_text,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["plans"] == []
+    assert data["commitment_map"]["amount_due_now"] is None
+    assert data["commitment_map"]["future_charge"] is None
+    assert data["commitment_map"]["billing_interval"] is None
+    assert data["commitment_map"]["cancellation_terms"] == "Cancel anytime"
+    assert "multiple pricing plans" not in data["summary"].lower()
+
+
 # ---------------------------------------------------------------------------
 # Test 2: Monthly versus annual prices on one page
 # ---------------------------------------------------------------------------
@@ -708,7 +736,8 @@ def test_phase3_1_checkout_difference_and_unexplained_difference_example():
     )
     assert unexplained_finding.severity == FindingSeverity.HIGH
     assert validate_verbatim_evidence(unexplained_finding.evidence_text, req.page_text)
-    assert "exceeds base price plus disclosed adjustments" in unexplained_finding.explanation
+    assert "itemized charges detected in the scanned text" in unexplained_finding.explanation
+    assert "not proof of deception" in unexplained_finding.explanation
     assert "USD 6.00" in unexplained_finding.explanation
 
 
@@ -838,7 +867,7 @@ def test_urgency_pressure_detection_positive():
     """Verify countdowns, expiry, and explicit scarcity trigger URGENCY_PRESSURE findings."""
     page_text = (
         "Special membership: $19.99 per month.\n"
-        "Hurry! Sale ends in 15 minutes, only 3 items left in stock!\n"
+        "Hurry! Sale ends in 15 minutes, only 3 seats left!\n"
         "Cancel anytime in settings."
     )
     req = AnalyzeRequest(
@@ -849,7 +878,10 @@ def test_urgency_pressure_detection_positive():
     res = analyze_page_content(req, default_settings)
 
     urgency_findings = [f for f in res.findings if f.category == FindingCategory.URGENCY_PRESSURE]
-    assert len(urgency_findings) >= 1
+    assert len(urgency_findings) >= 2
+    evidence = {finding.evidence_text for finding in urgency_findings}
+    assert any("Sale ends in 15 minutes" in snippet for snippet in evidence)
+    assert any("only 3 seats left" in snippet for snippet in evidence)
     for f in urgency_findings:
         assert f.evidence_level == EvidenceLevel.EXPLICIT
         assert f.evidence_text in page_text
@@ -925,13 +957,94 @@ def test_missing_commitment_info_not_flagged_for_one_time_or_disclosed_cancellat
     assert not any(f.category == FindingCategory.MISSING_COMMITMENT_INFO for f in res_sub.findings)
 
 
+def test_cancel_anytime_alone_does_not_imply_recurring_payment():
+    page_text = (
+        "Example Membership\n"
+        "Choose the membership that works for you.\n"
+        "Cancel anytime.\n"
+        "Contact support for details about your account."
+    )
+    req = AnalyzeRequest(
+        page_title="Example Membership",
+        page_url="https://example.test/membership",
+        page_text=page_text,
+    )
+    result = analyze_page_content(req, default_settings)
+
+    assert result.commitment_map.cancellation_terms == "Cancel anytime"
+    assert result.commitment_map.amount_due_now is None
+    assert result.commitment_map.future_charge is None
+    assert not result.findings
+
+
+def test_explicit_renewal_still_triggers_recurring_payment_detection():
+    page_text = "Subscription renews automatically at $10.00 per month. Cancel anytime."
+
+    is_recurring, evidence = detect_recurring_signals(page_text)
+    result = analyze_page_content(
+        AnalyzeRequest(
+            page_title="Renewing subscription",
+            page_url="https://example.test/subscription",
+            page_text=page_text,
+        ),
+        default_settings,
+    )
+
+    assert is_recurring
+    assert evidence == "renews automatically"
+    assert result.commitment_map.future_charge is not None
+    assert result.commitment_map.future_charge.amount == "10.00"
+    assert any(
+        finding.category == FindingCategory.RECURRING_PAYMENT
+        for finding in result.findings
+    )
+
+
+def test_account_settings_cancellation_method_is_recognized():
+    page_text = (
+        "Subscription renews automatically at $29.99 per month. "
+        "You can cancel from account settings."
+    )
+    req = AnalyzeRequest(
+        page_title="Subscription",
+        page_url="https://example.test/subscribe",
+        page_text=page_text,
+    )
+
+    cancellation = extract_cancellation_terms(page_text)
+    result = analyze_page_content(req, default_settings)
+
+    assert cancellation is not None
+    assert cancellation.terms.rstrip(".") == "cancel from account settings"
+    assert result.commitment_map.cancellation_terms == cancellation.terms
+    assert not any(
+        finding.id == "finding-missing-cancellation-terms"
+        for finding in result.findings
+    )
+    assert not any(
+        "Cancellation deadline and instructions are not stated" in unknown
+        for unknown in result.commitment_map.unknowns
+    )
+
+
 def test_analyzer_post_validation_evidence_grounding():
-    """Verify explicit findings with fabricated or missing evidence are rejected or downgraded."""
+    """Legacy AI findings stay untrusted even when their quotes are grounded."""
     from app.schemas import Finding
     page_text = "Simple subscription for $15/month. Cancel anytime."
 
-    # Mock an AI interpreter that attempts to return an explicit finding with fabricated evidence
+    # A verbatim quote grounds text, not the proposed category or explanation.
     mock_ai = MagicMock(spec=AIInterpreter)
+    grounded_finding = Finding(
+        id="ai-cancellation",
+        category=FindingCategory.CANCELLATION_REFUND_CLARITY,
+        severity=FindingSeverity.HIGH,
+        evidence_level=EvidenceLevel.EXPLICIT,
+        evidence_text="Cancel anytime.",
+        explanation="AI-proposed cancellation classification.",
+        confidence=0.9,
+        missing_information=[],
+        recommendation="Review cancellation terms.",
+    )
     fabricated_finding = Finding(
         id="fake-urgency",
         category=FindingCategory.URGENCY_PRESSURE,
@@ -944,7 +1057,7 @@ def test_analyzer_post_validation_evidence_grounding():
         recommendation="Beware",
     )
     mock_ai.interpret.return_value = AIInterpretationResult(
-        additional_findings=[fabricated_finding],
+        additional_findings=[grounded_finding, fabricated_finding],
         ai_status="active",
     )
 
@@ -954,8 +1067,15 @@ def test_analyzer_post_validation_evidence_grounding():
         page_text=page_text,
     )
     res = analyze_page_content(req, default_settings, ai_interpreter=mock_ai)
+    baseline = analyze_page_content(
+        req, default_settings, ai_interpreter=NullAIInterpreter()
+    )
 
-    # The fabricated finding must be stripped by post-validation
+    assert res.findings == baseline.findings
+    assert not any(f.id == "ai-cancellation" for f in res.findings)
     assert not any(f.id == "fake-urgency" for f in res.findings)
-
-
+    assert any(
+        "AI interpreter ran" in limitation
+        and "not included in trusted results" in limitation
+        for limitation in res.limitations
+    )

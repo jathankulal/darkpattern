@@ -107,9 +107,9 @@ def test_build_plan_timeline_trial_with_renewal():
         future_charge=MoneyValue(amount="29.99", currency="USD", kind=MoneyKind.RECURRING, interval="monthly"),
         billing_interval="monthly",
         trial_duration="14 days",
-        cancellation_terms="Cancel 24 hours prior",
+        cancellation_terms="Cancel at least 24 hours before renewal",
         is_ambiguous=False,
-        evidence_text="Pro: 14 days free, then $29.99/mo. Cancel 24 hours prior.",
+        evidence_text="Pro: 14 days free, then $29.99/mo. Cancel at least 24 hours before renewal.",
     )
     timeline = build_plan_timeline(plan, plan.evidence_text)
     assert timeline is not None
@@ -118,7 +118,7 @@ def test_build_plan_timeline_trial_with_renewal():
     assert timeline.events[0].title == "Pro Trial Begins"
     assert timeline.events[0].value_type == TimelineValueType.OBSERVED
     # Event 2: Cancellation deadline
-    assert timeline.events[1].title == "Cancellation Deadline"
+    assert timeline.events[1].title == "Cancellation Cutoff Deadline"
     assert timeline.events[1].is_critical_action is True
     # Event 3: First recurring charge
     assert timeline.events[2].title == "First Recurring Charge"
@@ -145,8 +145,36 @@ def test_build_plan_timeline_trial_without_renewal():
     assert len(timeline.events) == 2
     assert timeline.events[1].title == "Renewal Charge Amount (Undisclosed)"
     assert timeline.events[1].value_type == TimelineValueType.UNRESOLVED
-    assert timeline.events[1].is_critical_action is True
+    assert timeline.events[1].is_critical_action is False
     assert timeline.annualized_cost is None
+
+
+def test_cancel_anytime_is_not_misrepresented_as_a_required_deadline():
+    page_text = "Pro: 7-day free trial, then $29.99/month. Cancel anytime."
+    plan = PlanSummary(
+        plan_name="Pro",
+        future_charge=MoneyValue(
+            amount="29.99",
+            currency="USD",
+            kind=MoneyKind.RECURRING,
+            interval="monthly",
+        ),
+        billing_interval="monthly",
+        trial_duration="7 days",
+        cancellation_terms="Cancel anytime",
+        is_ambiguous=False,
+        evidence_text=page_text,
+    )
+
+    timeline = build_plan_timeline(plan, page_text)
+    cancellation_event = next(
+        event for event in timeline.events if "Cancellation" in event.title
+    )
+
+    assert cancellation_event.title == "Cancellation Instructions"
+    assert cancellation_event.value_type == TimelineValueType.OBSERVED
+    assert cancellation_event.evidence_text == "Cancel anytime"
+    assert cancellation_event.is_critical_action is False
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +251,14 @@ def test_fixture_1_subscription_trial_timeline(client):
     assert tl["events"][0]["amount"]["amount"] == "0"
     assert tl["events"][0]["value_type"] == "observed"
 
-    # Milestone 2: Cancellation deadline
+    # A billing-cycle reference does not establish a concrete cutoff.
     cancel_event = next(e for e in tl["events"] if "Cancellation" in e["title"])
-    assert cancel_event["is_critical_action"] is True
+    assert cancel_event["title"] == "Cancellation Timing Is Unclear"
+    assert cancel_event["value_type"] == TimelineValueType.UNRESOLVED.value
+    assert cancel_event["is_critical_action"] is False
+    assert cancel_event["evidence_text"] == (
+        "Cancel at least 24 hours before your billing cycle"
+    )
 
     # Milestone 3: First recurring charge
     charge_event = next(e for e in tl["events"] if e["title"] == "First Recurring Charge")
@@ -302,3 +335,270 @@ def test_fixture_4_multi_plan_pricing_timeline(client):
         elif plan["plan_name"] == "Enterprise":
             # Enterprise is $75/mo -> annualized $900.00
             assert plan["timeline"]["annualized_cost"]["amount"] == "900.00"
+
+
+def test_subscription_timeline_uses_price_and_renewal_evidence_separately(client):
+    price_evidence = "$19.99 per month"
+    renewal_evidence = "renews automatically"
+    page_text = (
+        "Only 2 minutes left! Subscribe now for $19.99 per month. "
+        "Your subscription renews automatically. "
+        "You can cancel from account settings."
+    )
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Checkout",
+            "page_url": "https://example.test/checkout",
+            "page_text": page_text,
+        },
+    )
+
+    assert response.status_code == 200
+    timeline = response.json()["timeline"]
+    events = {event["title"]: event for event in timeline["events"]}
+
+    initial = events["Initial Payment Due Now"]
+    next_charge = events["Next Recurring Charge"]
+    ongoing = events["Ongoing Subscription"]
+    annualized = events["Annualized Recurring Commitment"]
+
+    assert initial["evidence_text"] == price_evidence
+    assert initial["value_type"] == TimelineValueType.OBSERVED.value
+    assert next_charge["evidence_text"] == renewal_evidence
+    assert next_charge["value_type"] == TimelineValueType.OBSERVED.value
+    assert ongoing["evidence_text"] == renewal_evidence
+    assert ongoing["value_type"] == TimelineValueType.OBSERVED.value
+    assert annualized["evidence_text"] == price_evidence
+    assert annualized["value_type"] == TimelineValueType.CALCULATED.value
+    assert "calculated" in annualized["description"].lower()
+    assert "not a directly observed charge" in annualized["description"].lower()
+
+
+def test_trial_timeline_quotes_the_observed_recurring_price(client):
+    renewal_evidence = (
+        "After the trial, your subscription renews at $29.00 per month "
+        "automatically unless cancelled."
+    )
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Subscription Trial",
+            "page_url": "https://example.test/trial",
+            "page_text": (
+                "Start your 14-day free trial for $0.00.\n"
+                f"{renewal_evidence}\n"
+                "Cancel at least 24 hours before your billing cycle."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["commitment_map"]["future_charge"]["amount"] == "29.00"
+    assert data["commitment_map"]["future_charge"]["interval"] == "monthly"
+    assert data["timeline"]["annualized_cost"]["amount"] == "348.00"
+    events = {event["title"]: event for event in data["timeline"]["events"]}
+    for title in (
+        "First Recurring Charge",
+        "Ongoing Subscription",
+        "Annualized Recurring Commitment",
+    ):
+        assert events[title]["evidence_text"] == renewal_evidence
+    assert events["First Recurring Charge"]["evidence_text"] != "14-day free trial"
+
+
+def test_trial_with_cancel_anytime_in_account_settings_has_no_cutoff(client):
+    cancellation = "Cancel anytime from your account settings"
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Subscription Trial",
+            "page_url": "https://example.test/trial",
+            "page_text": (
+                "Enjoy a 14-day free trial.\n"
+                "After the trial, your subscription renews at $29.00 per month "
+                "automatically unless cancelled.\n"
+                f"{cancellation}."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["commitment_map"]["cancellation_terms"] == cancellation
+    event = next(
+        event for event in data["timeline"]["events"]
+        if "Cancellation" in event["title"]
+    )
+    assert event["title"] == "Cancellation Instructions"
+    assert event["value_type"] == TimelineValueType.OBSERVED.value
+    assert event["evidence_text"] == cancellation
+    assert event["is_critical_action"] is False
+
+
+def test_billing_cycle_cancellation_wording_is_unresolved_not_a_deadline(client):
+    cancellation = "Cancel at least 24 hours before your billing cycle"
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Subscription Trial",
+            "page_url": "https://example.test/trial",
+            "page_text": (
+                "Enjoy a 14-day free trial.\n"
+                "After the trial, your subscription renews at $29.00 per month "
+                "automatically unless cancelled.\n"
+                f"{cancellation}."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    event = next(
+        event for event in response.json()["timeline"]["events"]
+        if "Cancellation" in event["title"]
+    )
+    assert event["title"] == "Cancellation Timing Is Unclear"
+    assert event["value_type"] == TimelineValueType.UNRESOLVED.value
+    assert event["evidence_text"] == cancellation
+    assert event["is_critical_action"] is False
+
+
+def test_explicit_trial_end_deadline_remains_actionable(client):
+    cancellation = "Cancel at least 24 hours before the trial ends"
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Subscription Trial",
+            "page_url": "https://example.test/trial",
+            "page_text": (
+                "Enjoy a 14-day free trial. "
+                "After the trial, your subscription renews at $29.00 per month "
+                "automatically unless cancelled. "
+                f"{cancellation}."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    event = next(
+        event for event in response.json()["timeline"]["events"]
+        if "Cancellation" in event["title"]
+    )
+    assert event["title"] == "Cancellation Cutoff Deadline"
+    assert event["value_type"] == TimelineValueType.OBSERVED.value
+    assert event["evidence_text"] == cancellation
+    assert event["is_critical_action"] is True
+    assert event["timepoint"] == "Before stated renewal cutoff"
+
+
+def test_checkout_summary_uses_final_total_and_preserves_subtotal_arithmetic(client):
+    page_text = (
+        "Cart Summary\n"
+        "Subtotal: $50.00\n"
+        "Processing Fee: $4.00\n"
+        "Service Fee: $3.00\n"
+        "Order Total: $65.00\n"
+        "Non-refundable ticket reservation."
+    )
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "QuickTicketExpress Checkout",
+            "page_url": "https://tickets.example/checkout",
+            "page_text": page_text,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    commitment = data["commitment_map"]
+    integrity = data["price_integrity"]
+
+    assert commitment["amount_due_now"]["amount"] == "65.00"
+    assert integrity["checkout_subtotal"]["amount"] == "50.00"
+    assert sum(Decimal(fee["amount"]["amount"]) for fee in integrity["explicit_fees"]) == Decimal("7.00")
+    assert integrity["difference"]["amount"] == "15.00"
+    assert integrity["unexplained_difference"]["amount"] == "8.00"
+    assert commitment["cancellation_terms"] == "Non-refundable ticket reservation."
+    assert commitment["future_charge"] is None
+    assert commitment["billing_interval"] is None
+
+    payment_event = next(
+        event for event in data["timeline"]["events"]
+        if event["title"] == "One-Time Payment Due Now"
+    )
+    assert payment_event["amount"]["amount"] == "65.00"
+    assert payment_event["evidence_text"] == "Order Total: $65.00"
+
+    finding = next(
+        finding for finding in data["findings"]
+        if finding["id"] == "finding-unexplained-checkout-difference"
+    )
+    assert "USD 8.00" in finding["explanation"]
+    assert "itemized charges detected in the scanned text (USD 57.00)" in finding["explanation"]
+    assert "not proof of deception" in finding["explanation"].lower()
+
+
+def test_unresolved_trial_terms_are_not_labeled_action_required(client):
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Trial",
+            "page_url": "https://example.test/trial",
+            "page_text": "Start your free 7-day trial. Cancel anytime.",
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()["timeline"]["events"]
+    cancellation = next(
+        event for event in events if event["title"] == "Cancellation Instructions"
+    )
+    renewal = next(
+        event for event in events if event["title"] == "Renewal Charge Amount (Undisclosed)"
+    )
+
+    assert cancellation["value_type"] == TimelineValueType.OBSERVED.value
+    assert cancellation["evidence_text"] == "Cancel anytime"
+    assert cancellation["is_critical_action"] is False
+    assert "no cutoff deadline is stated" in cancellation["description"].lower()
+    assert "no cutoff deadline is stated" in cancellation["description"].lower()
+    assert renewal["value_type"] == TimelineValueType.UNRESOLVED.value
+    assert renewal["is_critical_action"] is False
+
+
+def test_analyze_endpoint_caps_response_plans_without_losing_analysis(client):
+    plan_names = [
+        "Basic", "Starter", "Standard", "Pro", "Professional",
+        "Premium", "Enterprise", "Business", "Personal", "Individual",
+        "Team", "Ultimate", "Plus", "Lite", "Family",
+    ]
+    page_text = "Hurry! Sale ends in 15 minutes.\n" + "\n".join(
+        f"{name} Plan: ${index + 9}.99 per month."
+        for index, name in enumerate(plan_names)
+    )
+
+    response = client.post(
+        "/api/v1/analyze",
+        json={
+            "page_title": "Plans",
+            "page_url": "https://example.test/plans",
+            "page_text": page_text,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["plans"]) == 10
+    assert [plan["plan_name"] for plan in data["plans"]] == [
+        f"{name} Plan" for name in plan_names[:10]
+    ]
+    assert all(plan["future_charge"] is not None for plan in data["plans"])
+    assert all(plan["timeline"] is not None for plan in data["plans"])
+    assert data["plans"][0]["future_charge"]["amount"] == "9.99"
+    assert data["plans"][0]["future_charge"]["currency"] == "USD"
+    assert data["plans"][0]["timeline"]["annualized_cost"]["amount"] == "119.88"
+    assert data["plans"][-1]["future_charge"]["amount"] == "18.99"
+    assert "Multiple pricing plans detected (15 tiers)" in data["timeline"]["note"]
+    assert any(finding["category"] == "urgency_pressure" for finding in data["findings"])

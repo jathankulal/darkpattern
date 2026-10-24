@@ -82,6 +82,7 @@ class ExtractedCancellation:
     terms: str
     raw_snippet: str
     deadline: Optional[str] = None
+    timing_unclear: bool = False
     start_pos: int = -1
     end_pos: int = -1
 
@@ -322,9 +323,10 @@ def extract_cancellation_terms(text: str) -> Optional[ExtractedCancellation]:
     if not text:
         return None
 
-    # Patterns with explicit deadlines (e.g. "cancel at least 24 hours before renewal")
+    # A relative deadline is actionable only when its anchor is stated clearly.
     deadline_pattern = re.compile(
-        r"cancel\s+(?:at\s+least\s+)?(?:\d+\s+(?:hours?|days?|hrs?))\s+before\s+(?:renewal|the\s+trial\s+ends?|next\s+billing|billing)",
+        r"cancel\s+(?:at\s+least\s+)?(?:\d+\s+(?:hours?|days?|hrs?))\s+before\s+"
+        r"(?:renewal|the\s+trial\s+ends?|next\s+billing(?:\s+date|\s+period)?)",
         re.IGNORECASE,
     )
     m = deadline_pattern.search(text)
@@ -338,9 +340,28 @@ def extract_cancellation_terms(text: str) -> Optional[ExtractedCancellation]:
             end_pos=m.end(),
         )
 
+    # A billing-cycle reference does not identify when the cutoff occurs.
+    unclear_timing_pattern = re.compile(
+        r"cancel\s+(?:at\s+least\s+)?(?:\d+\s+(?:hours?|days?|hrs?))\s+before\s+"
+        r"(?:your\s+)?billing(?:\s+cycle)?",
+        re.IGNORECASE,
+    )
+    m = unclear_timing_pattern.search(text)
+    if m:
+        snippet = m.group(0).strip()
+        return ExtractedCancellation(
+            terms=snippet,
+            raw_snippet=snippet,
+            timing_unclear=True,
+            start_pos=m.start(),
+            end_pos=m.end(),
+        )
+
     # "Cancel anytime before trial ends" / "cancel anytime"
     anytime_pattern = re.compile(
-        r"cancel\s+(?:online\s+)?anytime(?:\s+before\s+(?:trial\s+ends?|renewal|billing\s+date))?",
+        r"cancel\s+(?:online\s+)?anytime"
+        r"(?:\s+before\s+(?:trial\s+ends?|renewal|billing\s+date))?"
+        r"(?:\s+(?:from|in|through|via)\s+(?:your\s+)?account\s+settings)?",
         re.IGNORECASE,
     )
     m = anytime_pattern.search(text)
@@ -355,7 +376,10 @@ def extract_cancellation_terms(text: str) -> Optional[ExtractedCancellation]:
 
     # General cancellation mentions
     general_pattern = re.compile(
-        r"(?:non-refundable|refund\s+policy|cancellation\s+policy|cancel\s+(?:your\s+)?subscription)",
+        r"(?:non-refundable|refund\s+policy|cancellation\s+policy|"
+        r"cancel\s+(?:your\s+)?subscription|"
+        r"cancel\s+(?:your\s+)?(?:subscription\s+)?(?:from|through|via|in)\s+"
+        r"(?:your\s+)?account\s+settings)",
         re.IGNORECASE,
     )
     m = general_pattern.search(text)
@@ -405,7 +429,7 @@ def detect_recurring_signals(text: str) -> Tuple[bool, Optional[str]]:
 
     patterns = [
         r"(?:renews?\s+automatically|auto-renews?|automatic\s+renewal|recurring\s+(?:billing|charge|payment))",
-        r"(?:renews?\s+unless\s+cancelled|cancel\s+anytime|subscription\s+renews?)",
+        r"(?:renews?\s+unless\s+cancelled|subscription\s+renews?)",
         r"(?:billed\s+(?:monthly|annually|yearly|each\s+month|every\s+month))",
         r"(?:then\s+(?:₹|Rs\.?|INR|\$|USD|€|EUR|£)\s*\d+.*(?:per\s+month|/mo|monthly|annually))",
     ]
@@ -562,7 +586,8 @@ def find_plan_headers(text: str) -> List[Tuple[int, int, str]]:
     for m in p1.finditer(text):
         name_clean = m.group("name").strip()
         lower_name = name_clean.lower()
-        if any(f in lower_name for f in FALSE_PLAN_WORDS):
+        heading_suffix = m.group(0)[len(m.group("name")) :].strip().lower()
+        if any(f in lower_name for f in FALSE_PLAN_WORDS) or heading_suffix in FALSE_PLAN_WORDS:
             continue
         name_clean = re.sub(
             r"^(?:our|the|your|this|each|any|choose\s+a|choose\s+your|select\s+your|select\s+a|view|all)\b\s*",
@@ -1224,7 +1249,13 @@ def extract_checkout_price_comparison(
                     severity=FindingSeverity.HIGH,
                     evidence_level=EvidenceLevel.EXPLICIT,
                     evidence_text=find_snippet_in_text(evidence_text, page_text),
-                    explanation=f"Final checkout total ({final_total.currency} {final_total.amount}) exceeds base price plus disclosed adjustments ({base.currency} {expected_total_dec}) by an unexplained {base.currency} {unexplained_dec}.",
+                    explanation=(
+                        f"Final checkout total ({final_total.currency} {final_total.amount}) "
+                        f"is {base.currency} {unexplained_dec} higher than the subtotal plus "
+                        f"itemized charges detected in the scanned text ({base.currency} "
+                        f"{expected_total_dec}). This is an unexplained difference, not "
+                        "proof of deception."
+                    ),
                     confidence=0.95,
                     missing_information=["Itemized disclosure for the additional charge amount"],
                     recommendation="Inspect payment breakdown or ask support to explain the extra charge before paying.",
@@ -1554,6 +1585,11 @@ def run_deterministic_analysis(
             kind=MoneyKind.ONE_TIME,
             interval=None,
         )
+
+    if result.checkout_comparison and result.checkout_comparison.final_total:
+        # Keep the payable total in the commitment map; the subtotal remains
+        # separately available in PriceIntegrity for an explicit comparison.
+        result.amount_due_now = result.checkout_comparison.final_total
 
     # 6. Build Evidence-Backed Findings for identified commitments
     # Finding 1: Trial Conversion
