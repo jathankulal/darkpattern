@@ -264,17 +264,30 @@ def build_plan_timeline(plan: PlanSummary, page_text: str) -> FinancialTimeline:
                 )
             )
         if plan.future_charge:
+            is_one_time = plan.future_charge.kind == MoneyKind.ONE_TIME
             events.append(
                 TimelineEvent(
                     timepoint=f"After {plan.trial_duration}",
-                    title="First Recurring Charge",
+                    title=(
+                        "Post-Trial One-Time Payment"
+                        if is_one_time
+                        else "First Recurring Charge"
+                    ),
                     amount=plan.future_charge,
                     value_type=TimelineValueType.OBSERVED,
-                    description=f"{plan.plan_name} renews at {plan.future_charge.currency} {plan.future_charge.amount}{_interval_label(plan.future_charge.interval)}.",
+                    description=(
+                        f"{plan.plan_name} has a one-time payment of "
+                        f"{plan.future_charge.currency} {plan.future_charge.amount} "
+                        "after the trial."
+                        if is_one_time
+                        else f"{plan.plan_name} renews at {plan.future_charge.currency} {plan.future_charge.amount}{_interval_label(plan.future_charge.interval)}."
+                    ),
                     evidence_text=plan.evidence_text,
                     is_critical_action=False,
                 )
             )
+            if is_one_time:
+                return FinancialTimeline(events=events, annualized_cost=None)
             annual_cost, assumptions = calculate_annualized_cost(plan.future_charge)
             if annual_cost:
                 events.append(
@@ -294,18 +307,41 @@ def build_plan_timeline(plan: PlanSummary, page_text: str) -> FinancialTimeline:
                 annualized_cost_assumptions=assumptions,
             )
         else:
+            ambiguous_payment = any(
+                "Post-trial payment terms are unclear" in unknown
+                for unknown in plan.unknowns
+            )
             events.append(
                 TimelineEvent(
                     timepoint=f"After {plan.trial_duration}",
-                    title="Renewal Charge Amount (Undisclosed)",
+                    title=(
+                        "Post-Trial Billing Terms Unresolved"
+                        if ambiguous_payment
+                        else "Renewal Charge Amount (Undisclosed)"
+                    ),
                     amount=None,
                     value_type=TimelineValueType.UNRESOLVED,
-                    description=f"Renewal price after {plan.trial_duration} trial is not disclosed for {plan.plan_name}.",
-                    evidence_text="",
+                    description=(
+                        f"The post-trial amount is present for {plan.plan_name}, but "
+                        "the page does not establish whether it is one-time or "
+                        "recurring, or state a billing frequency."
+                        if ambiguous_payment
+                        else f"Renewal price after {plan.trial_duration} trial is not disclosed for {plan.plan_name}."
+                    ),
+                    evidence_text=plan.evidence_text if ambiguous_payment else "",
                     is_critical_action=False,
                 )
             )
-            return FinancialTimeline(events=events, annualized_cost=None)
+            return FinancialTimeline(
+                events=events,
+                annualized_cost=None,
+                note=(
+                    "A post-trial amount is present, but recurrence and billing "
+                    "frequency are not established."
+                    if ambiguous_payment
+                    else "Renewal price after trial is not stated on this page."
+                ),
+            )
 
     elif plan.future_charge:
         if plan.amount_due_now:
@@ -441,17 +477,31 @@ def build_financial_timeline(
             future_snip = _find_price_context_evidence(
                 commitment_map.future_charge, page_text
             )
+            is_one_time = commitment_map.future_charge.kind == MoneyKind.ONE_TIME
             events.append(
                 TimelineEvent(
                     timepoint=f"After {det_result.trial_duration}",
-                    title="First Recurring Charge",
+                    title=(
+                        "Post-Trial One-Time Payment"
+                        if is_one_time
+                        else "First Recurring Charge"
+                    ),
                     amount=commitment_map.future_charge,
                     value_type=TimelineValueType.OBSERVED,
-                    description=f"Trial transitions to recurring charge of {commitment_map.future_charge.currency} {commitment_map.future_charge.amount}{_interval_label(commitment_map.future_charge.interval)} unless cancelled.",
+                    description=(
+                        f"The trial is followed by a one-time payment of "
+                        f"{commitment_map.future_charge.currency} "
+                        f"{commitment_map.future_charge.amount}."
+                        if is_one_time
+                        else f"Trial transitions to recurring charge of {commitment_map.future_charge.currency} {commitment_map.future_charge.amount}{_interval_label(commitment_map.future_charge.interval)} unless cancelled."
+                    ),
                     evidence_text=future_snip,
                     is_critical_action=False,
                 )
             )
+
+            if is_one_time:
+                return FinancialTimeline(events=events, annualized_cost=None)
 
             # Milestone 4: Ongoing Billing
             interval_str = _interval_label(commitment_map.future_charge.interval)
@@ -488,21 +538,50 @@ def build_financial_timeline(
             )
         else:
             # Trial without stated renewal price
+            ambiguous_payment = any(
+                "Post-trial payment terms are unclear" in unknown
+                for unknown in det_result.unknowns
+            )
+            ambiguous_evidence = ""
+            if ambiguous_payment:
+                post_trial_prices = [
+                    price
+                    for price in extract_prices_from_text(page_text)
+                    if price.amount not in ("0", "0.0", "0.00")
+                ]
+                ambiguous_evidence = _find_matching_evidence(
+                    [price.raw_snippet for price in post_trial_prices], page_text
+                )
             events.append(
                 TimelineEvent(
                     timepoint=f"After {det_result.trial_duration}",
-                    title="Renewal Charge Amount (Undisclosed)",
+                    title=(
+                        "Post-Trial Billing Terms Unresolved"
+                        if ambiguous_payment
+                        else "Renewal Charge Amount (Undisclosed)"
+                    ),
                     amount=None,
                     value_type=TimelineValueType.UNRESOLVED,
-                    description="The renewal charge amount upon trial expiration is not disclosed in the visible text.",
-                    evidence_text="",
+                    description=(
+                        "A post-trial amount is present, but the page does not "
+                        "establish whether it is one-time or recurring or specify "
+                        "a billing frequency."
+                        if ambiguous_payment
+                        else "The renewal charge amount upon trial expiration is not disclosed in the visible text."
+                    ),
+                    evidence_text=ambiguous_evidence,
                     is_critical_action=False,
                 )
             )
             return FinancialTimeline(
                 events=events,
                 annualized_cost=None,
-                note="Renewal price after trial is not stated on this page.",
+                note=(
+                    "A post-trial amount is present, but recurrence and billing "
+                    "frequency are not established."
+                    if ambiguous_payment
+                    else "Renewal price after trial is not stated on this page."
+                ),
             )
 
     # Case 4: Subscription with Upfront/Recurring Charges (No Trial)
@@ -659,7 +738,11 @@ def generate_checklist(unknowns: List[str], has_recurring: bool, has_trial: bool
 
     for u in unknowns:
         u_lower = u.lower()
-        if "renewal" in u_lower or "future" in u_lower:
+        if "post-trial payment terms are unclear" in u_lower:
+            checklist.append(
+                "Confirm whether the post-trial amount is one-time or recurring and, if recurring, how often it is billed"
+            )
+        elif "renewal" in u_lower or "future" in u_lower:
             checklist.append("Confirm the regular renewal price on the payment page before confirming")
         elif "cancellation" in u_lower:
             checklist.append("Review merchant refund and cancellation policies before purchase")
@@ -717,7 +800,34 @@ def build_price_integrity(
             except Exception:
                 reason = PriceIntegrityReason.UNCLEAR
 
-    elif amount_due_now and future_charge and amount_due_now.kind == MoneyKind.TRIAL and future_charge:
+    elif (
+        amount_due_now
+        and future_charge
+        and amount_due_now.kind == MoneyKind.TRIAL
+        and future_charge.kind == MoneyKind.ONE_TIME
+    ):
+        observations.append(
+            PriceObservation(
+                stage="trial",
+                amount=amount_due_now,
+                context="Free trial period",
+            )
+        )
+        observations.append(
+            PriceObservation(
+                stage="post-trial",
+                amount=future_charge,
+                context="One-time payment after trial",
+            )
+        )
+        reason = PriceIntegrityReason.KNOWN
+
+    elif (
+        amount_due_now
+        and future_charge
+        and amount_due_now.kind == MoneyKind.TRIAL
+        and future_charge.kind == MoneyKind.RECURRING
+    ):
         observations.append(
             PriceObservation(
                 stage="trial",
@@ -760,6 +870,7 @@ def build_summary(
     plans_count: int = 0,
     plan_names: Optional[List[str]] = None,
     unexplained_difference: Optional[MoneyValue] = None,
+    unknowns: Optional[List[str]] = None,
 ) -> str:
     """Produce an objective, calm, plain-language summary of the financial terms."""
     if unexplained_difference:
@@ -776,6 +887,11 @@ def build_summary(
     trial = commitment_map.trial_duration
 
     if trial and future:
+        if future.kind == MoneyKind.ONE_TIME:
+            return (
+                f"Free trial lasting {trial} followed by a one-time payment of "
+                f"{future.currency} {future.amount}; recurring billing is not stated."
+            )
         interval_str = _interval_label(future.interval)
         return (
             f"Free trial lasting {trial} converting to a recurring charge of "
@@ -783,6 +899,15 @@ def build_summary(
         )
 
     if trial and not future:
+        if any(
+            "Post-trial payment terms are unclear" in unknown
+            for unknown in (unknowns or [])
+        ):
+            return (
+                f"A free trial of {trial} was identified. A post-trial amount "
+                "is stated, but whether it is one-time or recurring and its "
+                "billing frequency are not clear from the page."
+            )
         return (
             f"A free trial of {trial} was identified, but the renewal charge upon "
             "trial expiration is not disclosed on this page."
@@ -875,7 +1000,11 @@ def analyze_page_content(
     # 6. Generate Checklist ("Ask Before You Pay")
     checklist = generate_checklist(
         unknowns=commitment_map.unknowns,
-        has_recurring=det_result.is_recurring or bool(det_result.future_charge),
+        has_recurring=det_result.is_recurring
+        or bool(
+            det_result.future_charge
+            and det_result.future_charge.kind == MoneyKind.RECURRING
+        ),
         has_trial=any(bool(p.trial_duration) for p in det_result.plans) if det_result.plans else bool(det_result.trial_duration),
     )
 
@@ -901,6 +1030,7 @@ def analyze_page_content(
         plans_count=len(det_result.plans),
         plan_names=[p.plan_name for p in det_result.plans],
         unexplained_difference=price_integrity.unexplained_difference,
+        unknowns=commitment_map.unknowns,
     )
 
     status = AnalyzeStatus.OK

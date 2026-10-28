@@ -22,7 +22,7 @@ from app.schemas import (
 
 
 PAGE_TEXT = "Start a free 7-day trial. Then $9.99 per month automatically."
-QUOTE = "7-day trial"
+QUOTE = "Then $9.99 per month automatically."
 REQUEST = AnalyzeRequest(
     page_title="Streaming Checkout",
     page_url="https://example.test/checkout",

@@ -124,6 +124,15 @@ def find_snippet_in_text(snippet: str, source_text: str) -> str:
     return ""
 
 
+def find_price_context_snippet(price: ExtractedPrice, source_text: str) -> str:
+    """Return a verbatim sentence containing a price, falling back to the price itself."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", source_text):
+        sentence = sentence.strip()
+        if price.raw_snippet in sentence and len(sentence) <= 1000:
+            return sentence
+    return find_snippet_in_text(price.raw_snippet, source_text)
+
+
 # ---------------------------------------------------------------------------
 # Number and Currency Parsing
 # ---------------------------------------------------------------------------
@@ -241,6 +250,42 @@ def extract_prices_from_text(text: str) -> List[ExtractedPrice]:
         )
 
     return prices
+
+
+def _has_explicit_one_time_terms(price: ExtractedPrice) -> bool:
+    """Return whether text near a price explicitly describes a single payment."""
+    return bool(
+        re.search(
+            r"\b(?:one[\s-]?time|once|single[\s-]+payment|one-off|non[\s-]?recurring)\b",
+            price.context,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_explicit_recurring_terms(price: ExtractedPrice) -> bool:
+    """Return whether text near a price explicitly establishes recurring billing."""
+    has_non_recurring_wording = bool(
+        re.search(r"\bnon[\s-]?recurring\b", price.context, re.IGNORECASE)
+    )
+    has_specific_renewal_wording = bool(
+        re.search(
+            r"\b(?:renews?|auto[\s-]?renews?|automatic(?:ally)?\s+renew|billed)\b",
+            price.context,
+            re.IGNORECASE,
+        )
+    )
+    return bool(
+        (price.interval or has_specific_renewal_wording)
+        or (
+            not has_non_recurring_wording
+            and re.search(
+                r"\brecurring(?:\s+(?:charge|payment|billing))?\b",
+                price.context,
+                re.IGNORECASE,
+            )
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -695,24 +740,48 @@ def _build_plan_summary(
     ]
 
     if trial:
-        if recurring_prices:
-            renewal = recurring_prices[-1]
+        post_trial_prices = [
+            p
+            for p in prices
+            if p.start_pos >= trial.end_pos
+            and p.amount not in ("0", "0.0", "0.00")
+        ]
+        explicit_recurring_prices = [
+            p
+            for p in prices
+            if _has_explicit_recurring_terms(p)
+            and not _has_explicit_one_time_terms(p)
+        ]
+        explicit_one_time_prices = [
+            p
+            for p in post_trial_prices
+            if _has_explicit_one_time_terms(p)
+            and not _has_explicit_recurring_terms(p)
+        ]
+        if explicit_recurring_prices:
+            renewal = explicit_recurring_prices[-1]
             future_charge = MoneyValue(
                 amount=renewal.amount,
                 currency=renewal.currency,
                 kind=MoneyKind.RECURRING,
-                interval=renewal.interval or interval or "monthly",
+                interval=renewal.interval,
             )
             future_charge_trigger = f"After {trial_duration} trial ends"
-        elif one_time_prices:
-            renewal = one_time_prices[-1]
+        elif explicit_one_time_prices:
+            post_trial_price = explicit_one_time_prices[-1]
             future_charge = MoneyValue(
-                amount=renewal.amount,
-                currency=renewal.currency,
-                kind=MoneyKind.RECURRING,
-                interval=interval or "monthly",
+                amount=post_trial_price.amount,
+                currency=post_trial_price.currency,
+                kind=MoneyKind.ONE_TIME,
             )
             future_charge_trigger = f"After {trial_duration} trial ends"
+        elif post_trial_prices:
+            unknowns.append(
+                "Post-trial payment terms are unclear: the amount is stated, "
+                "but recurrence and billing frequency are not."
+            )
+            is_ambiguous = True
+            ambiguity_reason = "Post-trial payment recurrence and frequency are not stated"
         else:
             unknowns.append("Renewal price after trial is not stated for this plan")
             is_ambiguous = True
@@ -798,7 +867,11 @@ def _build_plan_summary(
         plan_name=plan_name,
         amount_due_now=amount_due_now,
         future_charge=future_charge,
-        billing_interval=interval or (future_charge.interval if future_charge else None),
+        billing_interval=(
+            None
+            if trial and (not future_charge or future_charge.kind == MoneyKind.ONE_TIME)
+            else interval or (future_charge.interval if future_charge else None)
+        ),
         trial_duration=trial_duration,
         future_charge_trigger=future_charge_trigger,
         cancellation_terms=cancellation_terms,
@@ -1363,11 +1436,28 @@ def run_deterministic_analysis(
             result.cancellation_terms = cancellation.terms
             result.evidence_snippets.append(cancellation.raw_snippet)
 
-        result.is_recurring = any(p.future_charge is not None for p in plans)
+        result.is_recurring = any(
+            p.future_charge is not None
+            and p.future_charge.kind == MoneyKind.RECURRING
+            for p in plans
+        )
 
         for p in plans:
             if p.trial_duration and p.future_charge:
                 ev = find_snippet_in_text(p.evidence_text, page_text) or find_snippet_in_text(p.plan_name, page_text)
+                if p.future_charge.kind == MoneyKind.ONE_TIME:
+                    explanation = (
+                        f"{p.plan_name}: The {p.trial_duration} trial is followed by "
+                        f"a one-time payment of {p.future_charge.currency} "
+                        f"{p.future_charge.amount}."
+                    )
+                else:
+                    explanation = (
+                        f"{p.plan_name}: Free trial lasting {p.trial_duration} "
+                        f"transitions to recurring charge of "
+                        f"{p.future_charge.currency} {p.future_charge.amount} "
+                        f"({p.future_charge.interval or 'monthly'})."
+                    )
                 result.findings.append(
                     Finding(
                         id=f"finding-trial-{p.plan_name.lower().replace(' ', '-')}",
@@ -1375,7 +1465,7 @@ def run_deterministic_analysis(
                         severity=FindingSeverity.INFO,
                         evidence_level=EvidenceLevel.EXPLICIT,
                         evidence_text=ev,
-                        explanation=f"{p.plan_name}: Free trial lasting {p.trial_duration} transitions to recurring charge of {p.future_charge.currency} {p.future_charge.amount} ({p.future_charge.interval or 'monthly'}).",
+                        explanation=explanation,
                         confidence=0.95,
                         missing_information=[],
                         recommendation="Set a calendar reminder before the trial ends if you do not wish to be billed automatically.",
@@ -1383,6 +1473,17 @@ def run_deterministic_analysis(
                 )
             elif p.trial_duration and not p.future_charge:
                 ev = find_snippet_in_text(p.evidence_text, page_text) or find_snippet_in_text(p.plan_name, page_text)
+                ambiguous_payment = any(
+                    "Post-trial payment terms are unclear" in u for u in p.unknowns
+                )
+                explanation = (
+                    f"{p.plan_name} includes a {p.trial_duration} trial, but the "
+                    "post-trial price is present without enough information to "
+                    "determine whether it is one-time or recurring or how often "
+                    "recurring billing would occur."
+                    if ambiguous_payment
+                    else f"{p.plan_name} includes a {p.trial_duration} trial, but the renewal charge upon expiration is not stated."
+                )
                 result.findings.append(
                     Finding(
                         id=f"finding-trial-no-renewal-{p.plan_name.lower().replace(' ', '-')}",
@@ -1390,10 +1491,21 @@ def run_deterministic_analysis(
                         severity=FindingSeverity.HIGH,
                         evidence_level=EvidenceLevel.EXPLICIT,
                         evidence_text=ev,
-                        explanation=f"{p.plan_name} includes a {p.trial_duration} trial, but the renewal charge upon expiration is not stated.",
+                        explanation=explanation,
                         confidence=0.9,
-                        missing_information=["Renewal price after trial expiration"],
-                        recommendation="Verify the post-trial renewal amount before submitting payment details.",
+                        missing_information=(
+                            [
+                                "Whether the post-trial payment is recurring",
+                                "Billing frequency, if recurring",
+                            ]
+                            if ambiguous_payment
+                            else ["Renewal price after trial expiration"]
+                        ),
+                        recommendation=(
+                            "Confirm whether the post-trial price is one-time or recurring, and verify its billing frequency before paying."
+                            if ambiguous_payment
+                            else "Verify the post-trial renewal amount before submitting payment details."
+                        ),
                     )
                 )
 
@@ -1465,29 +1577,77 @@ def run_deterministic_analysis(
             interval=None,
         )
 
-        # Check for renewal price
-        if recurring_prices:
-            # Pick the price associated with renewal / then
-            renewal = recurring_prices[-1]
+        post_trial_prices = [
+            p
+            for p in extracted_prices
+            if p.start_pos >= trial.end_pos
+            and p.amount not in ("0", "0.0", "0.00")
+        ]
+        explicit_recurring_prices = [
+            p
+            for p in extracted_prices
+            if _has_explicit_recurring_terms(p)
+            and not _has_explicit_one_time_terms(p)
+        ]
+        explicit_one_time_prices = [
+            p
+            for p in post_trial_prices
+            if _has_explicit_one_time_terms(p)
+            and not _has_explicit_recurring_terms(p)
+        ]
+
+        # A future price is recurring only when its nearby text states recurrence.
+        if explicit_recurring_prices:
+            renewal = explicit_recurring_prices[-1]
             result.future_charge = MoneyValue(
                 amount=renewal.amount,
                 currency=renewal.currency,
                 kind=MoneyKind.RECURRING,
-                interval=renewal.interval or result.billing_interval or "monthly",
+                interval=renewal.interval,
             )
             result.future_charge_trigger = f"After {result.trial_duration} trial ends"
             result.renewal_price = result.future_charge
-        elif one_time_prices and then_match:
-            # "then ₹999" where interval was parsed globally
-            renewal_candidate = one_time_prices[-1]
+        elif explicit_one_time_prices:
+            post_trial_price = explicit_one_time_prices[-1]
             result.future_charge = MoneyValue(
-                amount=renewal_candidate.amount,
-                currency=renewal_candidate.currency,
-                kind=MoneyKind.RECURRING,
-                interval=result.billing_interval or "monthly",
+                amount=post_trial_price.amount,
+                currency=post_trial_price.currency,
+                kind=MoneyKind.ONE_TIME,
             )
+            result.billing_interval = None
             result.future_charge_trigger = f"After {result.trial_duration} trial ends"
-            result.renewal_price = result.future_charge
+        elif post_trial_prices:
+            post_trial_price = post_trial_prices[-1]
+            result.billing_interval = None
+            result.unknowns.append(
+                "Post-trial payment terms are unclear: the amount is stated, "
+                "but recurrence and billing frequency are not."
+            )
+            result.findings.append(
+                Finding(
+                    id="finding-trial-ambiguous-billing",
+                    category=FindingCategory.FUTURE_CHARGE_DISCLOSURE,
+                    severity=FindingSeverity.HIGH,
+                    evidence_level=EvidenceLevel.EXPLICIT,
+                    evidence_text=find_snippet_in_text(
+                        post_trial_price.raw_snippet, page_text
+                    ),
+                    explanation=(
+                        "A price is stated after the trial, but the page does not "
+                        "establish whether it is a one-time payment or recurring "
+                        "billing, or specify a billing frequency."
+                    ),
+                    confidence=0.9,
+                    missing_information=[
+                        "Whether the post-trial payment is recurring",
+                        "Billing frequency, if recurring",
+                    ],
+                    recommendation=(
+                        "Confirm whether the post-trial price is one-time or "
+                        "recurring, and verify its billing frequency before paying."
+                    ),
+                )
+            )
         else:
             # Trial exists but NO future charge disclosed!
             result.unknowns.append("Future renewal charge after trial is not disclosed in page text")
@@ -1594,7 +1754,52 @@ def run_deterministic_analysis(
     # 6. Build Evidence-Backed Findings for identified commitments
     # Finding 1: Trial Conversion
     if trial and result.future_charge:
-        ev = find_snippet_in_text(trial.raw_snippet, page_text)
+        if result.future_charge.kind == MoneyKind.ONE_TIME:
+            conversion_explanation = (
+                f"Free trial lasting {result.trial_duration} is followed by a "
+                f"one-time payment of {result.future_charge.currency} "
+                f"{result.future_charge.amount}."
+            )
+        else:
+            conversion_explanation = (
+                f"Free trial lasting {result.trial_duration} transitions to a "
+                f"recurring charge of {result.future_charge.currency} "
+                f"{result.future_charge.amount} ({result.future_charge.interval or 'monthly'})."
+            )
+        if result.future_charge.kind == MoneyKind.ONE_TIME:
+            post_trial_price = next(
+                (
+                    price
+                    for price in explicit_one_time_prices
+                    if price.amount == result.future_charge.amount
+                    and price.currency == result.future_charge.currency
+                ),
+                None,
+            )
+            ev = (
+                find_price_context_snippet(post_trial_price, page_text)
+                if post_trial_price
+                else find_snippet_in_text(trial.raw_snippet, page_text)
+            )
+        else:
+            recurring_price = next(
+                (
+                    price
+                    for price in explicit_recurring_prices
+                    if price.amount == result.future_charge.amount
+                    and price.currency == result.future_charge.currency
+                    and (
+                        result.future_charge.interval is None
+                        or price.interval == result.future_charge.interval
+                    )
+                ),
+                None,
+            )
+            ev = (
+                find_price_context_snippet(recurring_price, page_text)
+                if recurring_price
+                else find_snippet_in_text(trial.raw_snippet, page_text)
+            )
         result.findings.append(
             Finding(
                 id="finding-trial-conversion",
@@ -1602,7 +1807,7 @@ def run_deterministic_analysis(
                 severity=FindingSeverity.INFO,
                 evidence_level=EvidenceLevel.EXPLICIT,
                 evidence_text=ev,
-                explanation=f"Free trial lasting {result.trial_duration} transitions to a recurring charge of {result.future_charge.currency} {result.future_charge.amount} ({result.future_charge.interval or 'monthly'}).",
+                explanation=conversion_explanation,
                 confidence=0.95,
                 missing_information=[],
                 recommendation="Set a calendar reminder before the trial ends if you do not wish to be billed automatically.",
@@ -1654,7 +1859,11 @@ def run_deterministic_analysis(
                 result.findings.append(_generate_missing_cancellation_finding())
         if not result.future_charge_trigger and result.future_charge:
             result.unknowns.append("Exact billing trigger date is not explicitly specified")
-        if not result.billing_interval and result.future_charge:
+        if (
+            not result.billing_interval
+            and result.future_charge
+            and result.future_charge.kind == MoneyKind.RECURRING
+        ):
             result.unknowns.append("Billing interval frequency is not explicitly defined")
 
     result.findings.extend(_generate_urgency_findings(page_text))

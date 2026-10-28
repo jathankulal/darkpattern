@@ -185,6 +185,142 @@ def test_case_5_introductory_and_separately_disclosed_renewal():
 
 
 # ---------------------------------------------------------------------------
+# Trial payment classification regressions
+# ---------------------------------------------------------------------------
+def test_trial_followed_by_explicit_one_time_payment_is_not_recurring():
+    page_text = (
+        "Pro Plan: Start your free 7-day trial. "
+        "Then pay $49 as a one-time payment."
+    )
+    res = analyze_page_content(
+        AnalyzeRequest(
+            page_title="Pro Plan",
+            page_url="https://example.test/pro",
+            page_text=page_text,
+        ),
+        default_settings,
+    )
+
+    assert res.commitment_map.trial_duration == "7 days"
+    assert res.commitment_map.future_charge is not None
+    assert res.commitment_map.future_charge.amount == "49"
+    assert res.commitment_map.future_charge.kind == MoneyKind.ONE_TIME
+    assert res.commitment_map.future_charge.interval is None
+    assert "one-time payment" in res.summary.lower()
+    assert res.plans[0].future_charge is not None
+    assert res.plans[0].future_charge.kind == MoneyKind.ONE_TIME
+    conversion_finding = next(
+        finding
+        for finding in res.findings
+        if finding.id == "finding-trial-conversion"
+    )
+    assert conversion_finding.evidence_text in page_text
+    assert "$49" in conversion_finding.evidence_text
+    assert "one-time payment" in conversion_finding.evidence_text.lower()
+    assert any(event.title == "Post-Trial One-Time Payment" for event in res.timeline.events)
+    assert not any(event.title == "Ongoing Subscription" for event in res.timeline.events)
+    assert res.timeline.annualized_cost is None
+    assert not any("recurring billing frequency" in item.lower() for item in res.checklist)
+
+
+def test_trial_followed_by_ambiguous_price_does_not_guess_recurring_billing():
+    page_text = "Pro Plan: Start your free 7-day trial. Then $49."
+    res = analyze_page_content(
+        AnalyzeRequest(
+            page_title="Pro Plan",
+            page_url="https://example.test/pro",
+            page_text=page_text,
+        ),
+        default_settings,
+    )
+
+    assert res.status == AnalyzeStatus.PARTIAL
+    assert res.commitment_map.future_charge is None
+    assert res.commitment_map.billing_interval is None
+    assert "amount is stated" in res.summary.lower()
+    assert "whether it is one-time or recurring" in res.summary.lower()
+    assert "not disclosed" not in res.summary.lower()
+    assert any(
+        "recurrence and billing frequency are not" in u.lower()
+        for u in res.commitment_map.unknowns
+    )
+    ambiguous_finding = next(
+        finding
+        for finding in res.findings
+        if finding.id == "finding-trial-ambiguous-billing"
+    )
+    assert ambiguous_finding.evidence_text in page_text
+    assert "whether it is a one-time payment or recurring billing" in ambiguous_finding.explanation
+    assert res.plans[0].future_charge is None
+    assert res.plans[0].is_ambiguous
+    assert any(
+        "recurrence and billing frequency are not" in u.lower()
+        for u in res.plans[0].unknowns
+    )
+    unresolved_event = next(
+        event
+        for event in res.timeline.events
+        if event.title == "Post-Trial Billing Terms Unresolved"
+    )
+    assert "$49" in unresolved_event.evidence_text
+    assert "not established" in (res.timeline.note or "").lower()
+    assert "not stated" not in (res.timeline.note or "").lower()
+    assert any("confirm whether the post-trial amount is one-time or recurring" in item.lower() for item in res.checklist)
+
+
+def test_trial_followed_by_explicit_monthly_payment_remains_recurring():
+    page_text = "Start your free 7-day trial. Then $49 per month."
+    res = analyze_page_content(
+        AnalyzeRequest(
+            page_title="Monthly Trial",
+            page_url="https://example.test/monthly",
+            page_text=page_text,
+        ),
+        default_settings,
+    )
+
+    assert res.commitment_map.future_charge is not None
+    assert res.commitment_map.future_charge.amount == "49"
+    assert res.commitment_map.future_charge.kind == MoneyKind.RECURRING
+    assert res.commitment_map.future_charge.interval == "monthly"
+    trial_finding = next(
+        finding
+        for finding in res.findings
+        if finding.id == "finding-trial-conversion"
+    )
+    assert validate_verbatim_evidence(trial_finding.evidence_text, page_text)
+    assert "$49" in trial_finding.evidence_text
+    assert "per month" in trial_finding.evidence_text.lower()
+    assert any(event.title == "First Recurring Charge" for event in res.timeline.events)
+    assert any(event.title == "Ongoing Subscription" for event in res.timeline.events)
+
+
+def test_trial_monthly_price_before_trial_has_verbatim_price_evidence():
+    page_text = "Pro Plan: $49 per month. Start your free 7-day trial."
+    res = analyze_page_content(
+        AnalyzeRequest(
+            page_title="Pro Plan",
+            page_url="https://example.test/pro",
+            page_text=page_text,
+        ),
+        default_settings,
+    )
+
+    assert res.commitment_map.future_charge is not None
+    assert res.commitment_map.future_charge.amount == "49"
+    assert res.commitment_map.future_charge.kind == MoneyKind.RECURRING
+    assert res.commitment_map.future_charge.interval == "monthly"
+    trial_finding = next(
+        finding
+        for finding in res.findings
+        if finding.id == "finding-trial-conversion"
+    )
+    assert validate_verbatim_evidence(trial_finding.evidence_text, page_text)
+    assert "$49" in trial_finding.evidence_text
+    assert "per month" in trial_finding.evidence_text.lower()
+
+
+# ---------------------------------------------------------------------------
 # Case 6: Cancellation deadline expressed in hours before renewal
 # ---------------------------------------------------------------------------
 def test_case_6_cancellation_deadline_hours_before_renewal():
